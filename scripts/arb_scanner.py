@@ -84,7 +84,7 @@ class ArbListener(ScriptStrategyBase):
     def bid_legs(self) -> List[ArbLeg]:
         exchange_a_sell_legs = [
             ArbLeg(
-                exchange=self.exchange_b,
+                exchange=self.exchange_a,
                 trading_pair=trading_pair,
                 price=self.connectors[self.exchange_a].get_price(trading_pair, False),
             )
@@ -92,7 +92,7 @@ class ArbListener(ScriptStrategyBase):
         ]
         exchange_b_sell_legs = [
             ArbLeg(
-                exchange=self.exchange_a,
+                exchange=self.exchange_b,
                 trading_pair=trading_pair,
                 price=self.connectors[self.exchange_b].get_price(trading_pair, False),
             )
