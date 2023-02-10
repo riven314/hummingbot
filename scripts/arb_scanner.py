@@ -143,6 +143,7 @@ class ArbListener(ScriptStrategyBase):
         best_ask_df = _parse_best_ask_df(market_status_df)
         best_bid_df = _parse_best_bid_df(market_status_df)
         merge_df = pd.concat([best_ask_df, best_bid_df], axis=1)
+        merge_df["Return (%)"] = (merge_df["Best Bid Price"] - merge_df["Best Ask Price"]) / merge_df["Best Ask Price"]
         return merge_df
 
     def _get_corrected_market_status_df(self) -> pd.DataFrame:
@@ -163,9 +164,7 @@ class ArbListener(ScriptStrategyBase):
             arb_candidate.sell_price,
         )
         self.logger().info(
-            f"[ARB DETECT::{trading_pair}] RETURN: {arb_return_percent:.5f}%\n",
-            f"BUY EXCHANGE::{buy_exchange} PRICE@{buy_price:.4f})\n",
-            f"SELL EXCHANGE::{sell_exchange} PRICE@{sell_price:.4f})\n",
+            f"[ARB DETECT::{trading_pair}] RETURN: {arb_return_percent:.5f}%\nBUY EXCHANGE::{buy_exchange} PRICE@{buy_price:.4f})\nSELL EXCHANGE::{sell_exchange} PRICE@{sell_price:.4f})\n"
         )
 
     def get_arb_candidates(self) -> List[ArbCandidate]:
