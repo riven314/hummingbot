@@ -17,13 +17,6 @@ class SlippagePriceError(Exception):
     pass
 
 
-class WalletBalance(BaseModel):
-    network: str
-    timestamp: int
-    latency: float
-    balances: Dict[str, str]
-
-
 class Transaction(TypedDict):
     network: str
     timestamp: int
@@ -252,21 +245,6 @@ class AmmTradePoll(ScriptStrategyBase):
             )
             return None
         return wallet[0]["wallet_address"]
-
-    async def get_wallet_balances(self) -> WalletBalance:
-        assert self.wallet_address is not None, "Wallet address is not set."
-        token_symbols = set()
-        for trading_pair in self.trading_pairs:
-            base_token, quote_token = split_base_quote(trading_pair)
-            token_symbols.add(base_token)
-            token_symbols.add(quote_token)
-        balances = await self.gateway_client.get_balances(
-            self.chain,
-            self.network,
-            self.wallet_address,
-            token_symbols=list(token_symbols),
-        )
-        return WalletBalance(**balances)
 
 
 def split_base_quote(trading_pair: str) -> Tuple[str, str]:
