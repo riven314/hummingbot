@@ -1,3 +1,8 @@
+"""
+TODO:
+1. use average price by order amount (base) instead of best bid/ ask
+2. integrate with database to collect data
+"""
 from dataclasses import dataclass
 from typing import List
 
