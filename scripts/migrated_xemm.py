@@ -185,8 +185,8 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             ).result_price
         except ZeroDivisionError:
             self.logger().warning(
-                f"ZeroDivisionError on get_vwap_for_volume for {taker_action} {trading_pair} at "
-                f"order size of {taker_balance_in_base}. No order will be submitted."
+                f"ZeroDivisionError on get_vwap_for_volume for taker {taker_action} {trading_pair} at "
+                f"order size of {taker_balance_in_base}. No order will be submitted for maker order."
             )
             assert (
                 adjusted_size == DECIMAL_ZERO
@@ -195,7 +195,8 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
         if taker_price is None:
             self.logger().warning(
-                f"Failed to obtain a taker {taker_action} order price. No order will be submitted."
+                f"taker_price is None at taker action: {taker_action}. "
+                "No order will be submitted for maker order."
             )
             order_amount = DECIMAL_ZERO
         else:
