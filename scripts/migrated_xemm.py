@@ -1,6 +1,7 @@
 from collections import deque
 from decimal import Decimal
-from typing import List, Set, Dict, Tuple, Deque
+from math import ceil, floor
+from typing import List, Optional, Set, Dict, Tuple, Deque
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
     BuyOrderCreatedEvent,
@@ -35,6 +36,8 @@ class CrossExchangeMarketMakingConfig:
     order_size_taker_balance_factor = 99.5
     # allowed slippage in percentage to fill ensure taker orders are filled.
     slippage_buffer = 5.0
+    # expressed in percentage
+    min_profitability = 0.40
 
 
 class CrossExchangeMarketMaking(ScriptStrategyBase):
@@ -57,8 +60,13 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     price_samples_size: int = CrossExchangeMarketMakingConfig.price_samples_size
     order_size_taker_balance_factor: Decimal = Decimal(
         CrossExchangeMarketMakingConfig.order_size_taker_balance_factor
-    )
-    slippage_buffer: Decimal = Decimal(CrossExchangeMarketMakingConfig.slippage_buffer)
+    ) / Decimal("100")
+    slippage_buffer: Decimal = Decimal(
+        CrossExchangeMarketMakingConfig.slippage_buffer
+    ) / Decimal("100")
+    min_profitability: Decimal = Decimal(
+        CrossExchangeMarketMakingConfig.min_profitability
+    ) / Decimal("100")
 
     # internal states to maintain
     # TODO: need to introduce maker to taker orders state? (e.g. _maker_to_taker_order_ids, _taker_to_maker_order_ids)
@@ -100,9 +108,14 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             else:
                 has_active_ask = True
 
-            current_hedge_price = self.get_effective_hedge_price(
+            current_hedge_price = self.get_taker_hedge_price(
                 trading_pair, is_buy, active_order.quantity
             )
+
+            # TODO: add log right before canceling order
+            # TODO: cancel if price is None or Decimal("nan")
+            if current_hedge_price is None or Decimal.is_nan(current_hedge_price):
+                continue
 
             if not await self.is_maker_order_still_profitable(
                 trading_pair, active_order, current_hedge_price
@@ -115,7 +128,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 continue
 
             if (timestamp > anti_adjust_order_time) and (
-                await self.is_price_drifted(trading_pair, active_order)
+                self.is_price_drifted(trading_pair, active_order)
             ):
                 self.cancel_maker_order(trading_pair, active_order.client_order_id)
                 self._anti_order_adjust_timer[trading_pair] = (
@@ -131,16 +144,60 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         )
         return
 
-    # CURATING ORDER PRICES
-    def get_effective_hedge_price(
-        self, trading_pair: str, is_buy: bool, quantity: Decimal
-    ) -> Decimal:
-        return DECIMAL_ZERO
+    # CALCULATING PRICES
+    def get_taker_hedge_price(
+        self, trading_pair: str, is_taker_buy: bool, base_order_size: Decimal
+    ) -> Optional[Decimal]:
+        taker_connector = self.connectors[self.taker_exchange]
+        # prepare detailed logging for warning/ error
+        verbose_footprint = (
+            f"trading_pair: {trading_pair}, taker exchange: {self.taker_exchange}, "
+            f"base order size: {base_order_size}, is_taker_buy: {is_taker_buy}."
+        )
+        try:
+            taker_price = taker_connector.get_vwap_for_volume(
+                trading_pair, is_taker_buy, base_order_size
+            ).result_price
+
+        except ZeroDivisionError:
+            self.logger().warning(
+                "ZeroDivisionError on get_vwap_for_volume for:\n" + verbose_footprint
+            )
+            return DECIMAL_NAN
+
+        if taker_price is None:
+            self.logger().error(
+                "taker_price is None on get_maker_price:\n" + verbose_footprint
+            )
+            return None
+        return taker_price
 
     def get_maker_price(
         self, trading_pair: str, is_bid: bool, base_order_size: Decimal
-    ) -> Decimal:
-        return DECIMAL_ZERO
+    ) -> Optional[Decimal]:
+        # taker action is opposite of maker action
+        is_taker_buy = not is_bid
+        taker_price = self.get_taker_hedge_price(
+            trading_pair, is_taker_buy, base_order_size
+        )
+        if taker_price is None or Decimal.is_nan(taker_price):
+            self.logger().error("taker_price is None or nan on get_maker_price")
+            return taker_price
+
+        maker_price = (
+            taker_price / (1 + self.min_profitability)
+            if is_bid
+            else taker_price * (1 + self.min_profitability)
+        )
+
+        # TODO: add feature to conditionally put price slightly better than top bid/ top ask
+        maker_connector = self.connectors[self.maker_exchange]
+        price_quantum = maker_connector.get_order_price_quantum(
+            trading_pair, maker_price
+        )
+        # round down for maker bid and round up for maker ask to ensure profitability
+        rounding_func = floor if is_bid else ceil
+        return Decimal(rounding_func(maker_price / price_quantum)) * price_quantum
 
     def get_maker_order_size(self, trading_pair: str, is_bid: bool) -> Decimal:
         adjusted_size = self._get_adjusted_base_order_amount(trading_pair)
@@ -148,10 +205,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             self.connectors[self.maker_exchange],
             self.connectors[self.taker_exchange],
         )
+        # X quote / base
         base_asset, quote_asset = split_hb_trading_pair(trading_pair)
-        fair_base_in_quote = RateOracle.get_instance().get_pair_rate(
-            trading_pair
-        )  # X quote / base
+        fair_base_in_quote = RateOracle.get_instance().get_pair_rate(trading_pair)
 
         if is_bid:
             # maker buy, taker sell
@@ -163,7 +219,6 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 self._get_available_balance(taker_connector, base_asset)
                 * self.order_size_taker_balance_factor
             )
-            taker_action = "selling"
             is_taker_buy = False
         else:
             # maker sell, taker buy
@@ -174,36 +229,29 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 self._get_available_balance(taker_connector, quote_asset)
                 * self.order_size_taker_balance_factor
             ) / fair_base_in_quote
-            taker_action = "buying"
             is_taker_buy = True
 
-        try:
-            # TODO: find alternative to get_vwap_for_volume
-            # TODO: double check True refers to buying order as market order
-            taker_price = taker_connector.get_vwap_for_volume(
-                trading_pair, is_taker_buy, taker_balance_in_base
-            ).result_price
-        except ZeroDivisionError:
+        # TODO: find alternative to get_vwap_for_volume
+        # TODO: double check True refers to buying order as market order
+        taker_price = self.get_taker_hedge_price(
+            trading_pair, is_taker_buy, adjusted_size
+        )
+
+        if taker_price is None:
             self.logger().warning(
-                f"ZeroDivisionError on get_vwap_for_volume for taker {taker_action} {trading_pair} at "
-                f"order size of {taker_balance_in_base}. No order will be submitted for maker order."
+                "taker_price is None at get_maker_order_size. No order will be submitted for maker order."
+            )
+            return DECIMAL_ZERO
+        if Decimal.is_nan(taker_price):
+            self.logger().warning(
+                "taker_price is Decimal nan at get_maker_order_size. No order will be submitted for maker order."
             )
             assert (
                 adjusted_size == DECIMAL_ZERO
             ), f"adjusted_order_amount ({adjusted_size}) is not {DECIMAL_ZERO}"
             return DECIMAL_ZERO
 
-        if taker_price is None:
-            self.logger().warning(
-                f"taker_price is None at taker action: {taker_action}. "
-                "No order will be submitted for maker order."
-            )
-            order_amount = DECIMAL_ZERO
-        else:
-            order_amount = min(
-                maker_balance_in_base, taker_balance_in_base, adjusted_size
-            )
-
+        order_amount = min(maker_balance_in_base, taker_balance_in_base, adjusted_size)
         return maker_connector.quantize_order_price(trading_pair, Decimal(order_amount))
 
     def update_suggested_price_samples(
@@ -301,13 +349,48 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     async def is_maker_order_still_profitable(
         self, trading_pair: str, order: LimitOrder, hedge_price: Decimal
     ) -> bool:
-        return False
+        if hedge_price is None:
+            self.logger().warning(
+                "hedge_price from is_maker_order_still_profitable is None, returning False for order profitability."
+            )
+            return False
+
+        # TODO: set expected vs ideal profitability, cancel when its worse than expected
+        is_maker_buy = order.is_buy
+        order_price = order.price
+        if is_maker_buy:
+            is_profitable = order_price > hedge_price / (1 + self.min_profitability)
+        else:
+            is_profitable = order_price < hedge_price * (1 + self.min_profitability)
+
+        if is_profitable:
+            limit_order_type_str = "bid" if is_maker_buy else "ask"
+            _, quote_asset = split_hb_trading_pair(trading_pair)
+            self.logger().info(
+                f"({trading_pair}) Limit {limit_order_type_str} order at "
+                f"{order_price:.8g} {quote_asset} is no longer profitable in maker exchange {self.maker_exchange}."
+            )
+        return is_profitable
 
     async def is_sufficient_balance(self, trading_pair: str, order: LimitOrder) -> bool:
         return False
 
-    async def is_price_drifted(self, trading_pair: str, order: LimitOrder) -> bool:
-        return False
+    def is_price_drifted(self, trading_pair: str, order: LimitOrder) -> bool:
+        is_buy = order.is_buy
+        order_price = order.price
+        order_quantity = order.quantity
+        suggested_price = self.get_maker_price(trading_pair, is_buy, order_quantity)
+        is_drifted = suggested_price != order_price
+        if is_drifted:
+            base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+            order_action = "bid" if is_buy else "ask"
+            self.logger().info(
+                f"({trading_pair}) The current limit {order_action} order for "
+                f"{order.quantity} {base_asset} at "
+                f"{order_price:.8g} {quote_asset} is now inferrior than the suggested order "
+                f"price at {suggested_price}.",
+            )
+        return is_drifted
 
     def is_pending_taker_orders(self) -> bool:
         return True
