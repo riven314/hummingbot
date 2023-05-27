@@ -1,12 +1,15 @@
 from collections import deque
+from dataclasses import dataclass
 from decimal import Decimal
 from math import ceil, floor
-from typing import List, Optional, Set, Dict, Tuple, Deque
+from typing import List, Optional, Set, Dict, Tuple, Deque, Union
+from hummingbot.core.data_type.common import OrderType
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
     BuyOrderCreatedEvent,
     MarketOrderFailureEvent,
     OrderCancelledEvent,
+    OrderExpiredEvent,
     OrderFilledEvent,
     SellOrderCompletedEvent,
     SellOrderCreatedEvent,
@@ -40,6 +43,8 @@ class CrossExchangeMarketMakingConfig:
     min_profitability = 0.40
 
 
+# TODO: add expiry time for hedge order
+# TODO: raise log if base asset sum doesn't match and no pending hedge orders
 class CrossExchangeMarketMaking(ScriptStrategyBase):
     # read from config
     trading_pair: str = CrossExchangeMarketMakingConfig.trading_pair
@@ -79,9 +84,6 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         if self.is_pending_taker_orders():
             return
 
-        self.logger().info(
-            f"Processing {self.trading_pair} tick. Maker exchange: {self.maker_exchange}"
-        )
         safe_ensure_future(self.main(self.current_timestamp))  # type: ignore
         return
 
@@ -112,7 +114,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 trading_pair, is_buy, active_order.quantity
             )
 
-            # TODO: add log right before canceling order
+            # TODO: add more logging (e.g. right before cancel active order)
             # TODO: cancel if price is None or Decimal("nan")
             if current_hedge_price is None or Decimal.is_nan(current_hedge_price):
                 continue
@@ -139,9 +141,11 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         if has_active_bid and has_active_ask:
             return
 
-        await self.check_and_create_maker_orders(
-            trading_pair, has_active_bid, has_active_ask
-        )
+        # TODO: place orders in batch on both side
+        if not has_active_bid:
+            await self.check_and_create_maker_orders(trading_pair, is_bid=True)
+        if not has_active_ask:
+            await self.check_and_create_maker_orders(trading_pair, is_bid=False)
         return
 
     # CALCULATING PRICES
@@ -323,10 +327,10 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         self, trading_pair: str
     ) -> Tuple[Decimal, Decimal]:
         top_ask_price = self.connectors[self.maker_exchange].get_price(
-            self.trading_pair, True
+            trading_pair, True
         )
         top_bid_price = self.connectors[self.maker_exchange].get_price(
-            self.trading_pair, False
+            trading_pair, False
         )
         return top_bid_price, top_ask_price
 
@@ -404,8 +408,52 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         self.cancel(self.taker_exchange, trading_pair, order_id)
 
     async def check_and_create_maker_orders(
-        self, trading_pair: str, has_active_bid: bool, has_active_ask: bool
+        self, trading_pair: str, is_bid: bool
     ) -> None:
+        # TODO: handle the case when order_size doesn't meet the minimum order size from taker exchange
+        order_size = self.get_maker_order_size(trading_pair, is_bid)
+        order_action = "bid" if is_bid else "ask"
+        if order_size <= DECIMAL_ZERO:
+            self.logger().warning(
+                f"[{trading_pair}] "
+                f"Order book on taker is too thin to place order. "
+                f"Skip creating maker {order_action} order with size {order_size:.8f}."
+            )
+            return
+
+        order_price = self.get_maker_price(trading_pair, True, order_size)
+        if order_price is None:
+            self.logger().warning(
+                f"[{trading_pair}] "
+                f"Maker bid price is None. "
+                f"Skip creating maker {order_action} order with size {order_size:.8f}."
+            )
+        elif Decimal.is_nan(order_price):
+            self.logger().warning(
+                f"[{trading_pair}] "
+                f"Maker bid price is NaN because taker order book is too. "
+                f"Skip creating maker {order_action} order with size {order_size:.8f}."
+            )
+            return
+
+        taker_hedge_price = self.get_taker_hedge_price(trading_pair, is_bid, order_size)
+        base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+        self.logger().info(
+            f"[{trading_pair}] Creating limit {order_action} order for "
+            f"{order_size:.8f} {base_asset} at {order_price:.8f} {quote_asset}. "
+            f"Current hedging price: {taker_hedge_price:.8f} {quote_asset}."
+        )
+        order_func = self.buy if is_bid else self.sell
+        order_func(
+            self.maker_exchange,
+            trading_pair=trading_pair,
+            amount=order_size,
+            order_type=OrderType.LIMIT,
+            price=order_price,
+        )
+        return
+
+    def check_and_hedge_maker_orders(self, trading_pair: str) -> None:
         pass
 
     # EVENT HANDLING
@@ -418,17 +466,53 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     def did_fill_order(self, event: OrderFilledEvent) -> None:
         pass
 
-    def did_cancel_order(self, event: OrderCancelledEvent) -> None:
-        pass
-
-    def did_fail_order(self, event: MarketOrderFailureEvent) -> None:
-        pass
-
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent) -> None:
         pass
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent) -> None:
         pass
+
+    def did_cancel_order(self, event: OrderCancelledEvent) -> None:
+        self._log_abnormal_order_event(event, order_status="CANCELLED")
+
+    def did_fail_order(self, event: MarketOrderFailureEvent) -> None:
+        self._log_abnormal_order_event(event, order_status="FAILED")
+
+    def did_expire_order(self, event: OrderExpiredEvent) -> None:
+        self._log_abnormal_order_event(event, order_status="EXPIRED")
+
+    def _log_abnormal_order_event(
+        self,
+        event: Union[OrderCancelledEvent, MarketOrderFailureEvent, OrderExpiredEvent],
+        order_status: str,
+    ) -> None:
+        order_id = event.order_id
+        maker_connector, taker_connector = self.maker_exchange, self.taker_exchange
+        if self._is_exchange_active_orders(taker_connector, order_id):
+            self.logger().error(
+                f"[Taker exchange: {taker_connector}] Hedge order is {order_status} (Event: {event}). "
+                f"Raise error logs here for suspicious behavior but SKIP retrying hedge."
+            )
+        elif self._is_exchange_active_orders(maker_connector, order_id):
+            # normal to have maker orders cancelled
+            if not isinstance(event, OrderCancelledEvent):
+                self.logger().error(
+                    f"[Maker exchange: {maker_connector}] Maker order is {order_status} (Event: {event}). "
+                    "Raise error logs here for suspicious behavior but SKIP recreating maker order in this event."
+                )
+        else:
+            self.logger().error(
+                f"Order doesnt belong to any exchanges and it is {order_status} (Event: {event}). "
+                "Raise error logs here for suspicious behavior because this is suspicious!"
+            )
+        return
+
+    # TODO: avoid looping active orders when scaled up to multi tokens
+    def _is_exchange_active_orders(self, connector_name: str, order_id: str) -> bool:
+        for order in self.get_active_orders(connector_name=connector_name):
+            if order.client_order_id == order_id:
+                return True
+        return False
 
     # FORMAT STATUS
     def format_status(self) -> str:
@@ -445,5 +529,3 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             f"usd_conversion_rate: {usd_conversion_rate}",
         ]
         return "\n".join(lines)
-
-    # HELPER METHODS FOR FORMAT STATUS
