@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from math import ceil, floor
 from typing import List, Optional, Set, Dict, Tuple, Deque, Union
-from hummingbot.core.data_type.common import OrderType
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
     MarketOrderFailureEvent,
@@ -174,6 +174,15 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             return None
         return taker_price
 
+    def get_price_with_slippage(self, price: Decimal, is_buy: bool) -> Decimal:
+        # if slippage occur, you may buy at a higher price or sell at a lower price
+        slippage_factor = (
+            Decimal("1") + self.hedge_slippage_buffer
+            if is_buy
+            else Decimal("1") + self.hedge_slippage_buffer
+        )
+        return price * slippage_factor
+
     def get_maker_price(
         self, trading_pair: str, is_bid: bool, base_order_size: Decimal
     ) -> Optional[Decimal]:
@@ -183,7 +192,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             trading_pair, is_taker_buy, base_order_size
         )
         if taker_price is None or Decimal.is_nan(taker_price):
-            self.logger().error("taker_price is None or nan on get_maker_price")
+            self.logger().error(
+                f"taker_price from get_maker_price is None or nan ({taker_price})."
+            )
             return taker_price
 
         maker_price = (
@@ -451,12 +462,85 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         )
         return
 
-    def check_and_hedge_maker_orders(self, trading_pair: str) -> None:
-        pass
+    def check_and_hedge_maker_orders(
+        self, trading_pair: str, base_order_size: Decimal, is_taker_buy: bool
+    ) -> None:
+        taker_exchange = self.taker_exchange
+        order_action = "BUY" if is_taker_buy else "SELL"
+
+        # determine limit order size for the hedge
+        base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+        if is_taker_buy:
+            fair_base_in_quote = RateOracle.get_instance().get_pair_rate(trading_pair)
+            taker_balance_in_quote = (
+                self._get_available_balance(self.taker_exchange, quote_asset)
+                * self.order_size_taker_balance_factor
+            )
+            taker_balance_in_base = taker_balance_in_quote / fair_base_in_quote
+        else:
+            taker_balance_in_base = (
+                self._get_available_balance(self.taker_exchange, base_asset)
+                * self.order_size_taker_balance_factor
+            )
+
+        if taker_balance_in_base < base_order_size:
+            self.logger().warning(
+                f"[{trading_pair}] Balance from taker exchange ({taker_exchange}) is: "
+                f"{taker_balance_in_base:.8f} converted in {base_asset}. "
+                f"Its not enough to send a {order_action} order of target order size of {base_order_size:.8f} in {base_asset}. "
+                f"Adjust the order size to be {taker_balance_in_base:.8f} in {base_asset}."
+            )
+            adjusted_order_size = taker_balance_in_base
+        else:
+            adjusted_order_size = base_order_size
+
+        # determine limit order price for the hedge
+        taker_hedge_price = self.get_taker_hedge_price(
+            trading_pair, is_taker_buy, adjusted_order_size
+        )
+        if taker_hedge_price is None or Decimal.is_nan(taker_hedge_price):
+            self.logger().info(
+                f"taker_hedge_price from check_and_hedge_maker_orders is None or nan ({taker_hedge_price})."
+                f"Skip placing hedge order on taker exchange: {taker_exchange}."
+            )
+            return
+
+        hedge_price_with_slippage = self.get_price_with_slippage(
+            taker_hedge_price, is_buy=is_taker_buy
+        )
+
+        # submit hedge order in taker exchange
+        quantized_adjusted_order_size = self.connectors[
+            taker_exchange
+        ].quantize_order_amount(trading_pair, Decimal(adjusted_order_size))
+        order_func = self.buy if is_taker_buy else self.sell
+        self.logger().info(
+            f"[{trading_pair}] Submitting {order_action} order as a hedge in taker exchange ({taker_exchange}). "
+            f"Order size: {quantized_adjusted_order_size:.8f} in {base_asset}. "
+            f"Order price: {hedge_price_with_slippage:.8f} in {quote_asset}."
+        )
+        order_func(
+            taker_exchange,
+            trading_pair,
+            amount=quantized_adjusted_order_size,
+            order_type=OrderType.LIMIT,
+            price=hedge_price_with_slippage,
+        )
+        return
 
     # EVENT HANDLING ON ORDER STATUS CHANGE
     def did_fill_order(self, event: OrderFilledEvent) -> None:
-        pass
+        order_id = event.order_id
+        if self._is_exchange_active_order(self.maker_exchange, order_id):
+            # TODO
+            self.logger().info("")
+
+            # if maker sell order is filled, then taker should be buy as a hedge
+            is_taker_buy = event.trade_type == TradeType.SELL
+            self.check_and_hedge_maker_orders(
+                event.trading_pair, event.amount, is_taker_buy
+            )
+        return
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent) -> None:
         return self._log_complete_order_event(event, order_side="BUY")
