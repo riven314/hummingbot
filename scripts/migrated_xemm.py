@@ -6,13 +6,11 @@ from typing import List, Optional, Set, Dict, Tuple, Deque, Union
 from hummingbot.core.data_type.common import OrderType
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
-    BuyOrderCreatedEvent,
     MarketOrderFailureEvent,
     OrderCancelledEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     SellOrderCompletedEvent,
-    SellOrderCreatedEvent,
 )
 from hummingbot.connector.connector_base import ConnectorBase  # type: ignore
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
@@ -35,11 +33,11 @@ class CrossExchangeMarketMakingConfig:
     anti_order_adjust_duration: float = 60.0
     collect_price_samples_interval: int = 5
     price_samples_size: int = 12
-    # what percentage of asset balance would you like to use for hedging trades on the taker market?
+    # expressed in %, what percentage of asset balance would you like to use for hedging trades on the taker market?
     order_size_taker_balance_factor = 99.5
-    # allowed slippage in percentage to fill ensure taker orders are filled.
-    slippage_buffer = 5.0
-    # expressed in percentage
+    # expressed in %, max. allowed slippage on limit taker order to ensure it is likely filled.
+    hedge_slippage_buffer = 5.0
+    # expressed in %
     min_profitability = 0.40
 
 
@@ -66,8 +64,8 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     order_size_taker_balance_factor: Decimal = Decimal(
         CrossExchangeMarketMakingConfig.order_size_taker_balance_factor
     ) / Decimal("100")
-    slippage_buffer: Decimal = Decimal(
-        CrossExchangeMarketMakingConfig.slippage_buffer
+    hedge_slippage_buffer: Decimal = Decimal(
+        CrossExchangeMarketMakingConfig.hedge_slippage_buffer
     ) / Decimal("100")
     min_profitability: Decimal = Decimal(
         CrossExchangeMarketMakingConfig.min_profitability
@@ -456,21 +454,15 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     def check_and_hedge_maker_orders(self, trading_pair: str) -> None:
         pass
 
-    # EVENT HANDLING
-    def did_create_buy_order(self, event: BuyOrderCreatedEvent) -> None:
-        pass
-
-    def did_create_sell_order(self, event: SellOrderCreatedEvent) -> None:
-        pass
-
+    # EVENT HANDLING ON ORDER STATUS CHANGE
     def did_fill_order(self, event: OrderFilledEvent) -> None:
         pass
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent) -> None:
-        pass
+        return self._log_complete_order_event(event, order_side="BUY")
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent) -> None:
-        pass
+        return self._log_complete_order_event(event, order_side="SELL")
 
     def did_cancel_order(self, event: OrderCancelledEvent) -> None:
         self._log_abnormal_order_event(event, order_status="CANCELLED")
@@ -486,14 +478,16 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         event: Union[OrderCancelledEvent, MarketOrderFailureEvent, OrderExpiredEvent],
         order_status: str,
     ) -> None:
+        # TODO: event doesn't contian order price, order amount, trading pair, find a way to recover them
+        # TODO: add retry logic for taker hedge orders
         order_id = event.order_id
         maker_connector, taker_connector = self.maker_exchange, self.taker_exchange
-        if self._is_exchange_active_orders(taker_connector, order_id):
+        if self._is_exchange_active_order(taker_connector, order_id):
             self.logger().error(
                 f"[Taker exchange: {taker_connector}] Hedge order is {order_status} (Event: {event}). "
                 f"Raise error logs here for suspicious behavior but SKIP retrying hedge."
             )
-        elif self._is_exchange_active_orders(maker_connector, order_id):
+        elif self._is_exchange_active_order(maker_connector, order_id):
             # normal to have maker orders cancelled
             if not isinstance(event, OrderCancelledEvent):
                 self.logger().error(
@@ -502,13 +496,44 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 )
         else:
             self.logger().error(
-                f"Order doesnt belong to any exchanges and it is {order_status} (Event: {event}). "
+                f"Order doesnt belong to taker exchange ({taker_connector}) or maker exchange ({maker_connector}) "
+                f"and the order is {order_status} (Event: {event}). "
                 "Raise error logs here for suspicious behavior because this is suspicious!"
             )
         return
 
+    def _log_complete_order_event(
+        self,
+        event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent],
+        order_side: str,
+    ) -> None:
+        order_id = event.order_id
+        exchange_order_id = event.exchange_order_id
+        base_asset, quote_asset = event.base_asset, event.quote_asset
+        trading_pair = f"{base_asset}-{quote_asset}"
+        order_base_amount = event.base_asset_amount
+
+        maker_connector, taker_connector = self.maker_exchange, self.taker_exchange
+        if self._is_exchange_active_order(taker_connector, order_id):
+            self.logger().info(
+                f"[Taker exchange: {taker_connector}, {trading_pair}] Taker hedge {order_side} order has been completely filled: "
+                f"{order_base_amount:.8f} {base_asset} (order_id: {order_id}, exchange_order_id: {exchange_order_id})."
+            )
+        elif self._is_exchange_active_orders(maker_connector, order_id):
+            self.logger().info(
+                f"[Maker exchnge: {taker_connector}, {trading_pair}] Maker {order_side} order has been completely filled: "
+                f"{order_base_amount:.8f} {base_asset} (order_id: {order_id}, exchange_order_id: {exchange_order_id})."
+            )
+        else:
+            self.logger().error(
+                "Unknown order is completely filled but it doesnt belong to "
+                f"taker exchange ({taker_connector}) or maker exchanges ({maker_connector}). "
+                f"(order_id: {order_id}, exchange_order_id: {exchange_order_id})"
+            )
+        return
+
     # TODO: avoid looping active orders when scaled up to multi tokens
-    def _is_exchange_active_orders(self, connector_name: str, order_id: str) -> bool:
+    def _is_exchange_active_order(self, connector_name: str, order_id: str) -> bool:
         for order in self.get_active_orders(connector_name=connector_name):
             if order.client_order_id == order_id:
                 return True
