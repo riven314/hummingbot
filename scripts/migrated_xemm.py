@@ -1,16 +1,18 @@
 from collections import deque
-from dataclasses import dataclass
+from collections import defaultdict
 from decimal import Decimal
 from math import ceil, floor
-from typing import List, Optional, Set, Dict, Tuple, Deque, Union
+from typing import List, Optional, Set, Dict, Tuple, Deque, Union, DefaultDict
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
+    BuyOrderCreatedEvent,
     MarketOrderFailureEvent,
     OrderCancelledEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     SellOrderCompletedEvent,
+    SellOrderCreatedEvent,
 )
 from hummingbot.connector.connector_base import ConnectorBase  # type: ignore
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
@@ -25,27 +27,27 @@ DECIMAL_ZERO = Decimal(0)
 
 
 class CrossExchangeMarketMakingConfig:
-    trading_pair = "ETH-USDT"
-    trading_pairs = {trading_pair}
+    trading_pairs: Set[str] = {"ETH-USDT"}
     base_order_amount: Decimal = Decimal("0.1")
     taker_exchange: str = "kucoin"
     maker_exchange: str = "bybit"
     anti_order_adjust_duration: float = 60.0
+    # if the hedge orders hanging in self._pending_hedge_orders for too long (in seconds), raise a log
+    hedge_order_tolerance_duration: float = 60 * 5
     collect_price_samples_interval: int = 5
     price_samples_size: int = 12
     # expressed in %, what percentage of asset balance would you like to use for hedging trades on the taker market?
-    order_size_taker_balance_factor = 99.5
+    order_size_taker_balance_factor: float = 99.5
     # expressed in %, max. allowed slippage on limit taker order to ensure it is likely filled.
-    hedge_slippage_buffer = 5.0
+    hedge_slippage_buffer: float = 5.0
     # expressed in %
-    min_profitability = 0.40
+    min_profitability: float = 0.40
 
 
 # TODO: add expiry time for hedge order
 # TODO: raise log if base asset sum doesn't match and no pending hedge orders
 class CrossExchangeMarketMaking(ScriptStrategyBase):
     # read from config
-    trading_pair: str = CrossExchangeMarketMakingConfig.trading_pair
     trading_pairs: Set[str] = CrossExchangeMarketMakingConfig.trading_pairs
     maker_exchange: str = CrossExchangeMarketMakingConfig.maker_exchange
     taker_exchange: str = CrossExchangeMarketMakingConfig.taker_exchange
@@ -56,6 +58,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     base_order_amount: Decimal = CrossExchangeMarketMakingConfig.base_order_amount
     anti_order_adjust_duration: float = (
         CrossExchangeMarketMakingConfig.anti_order_adjust_duration
+    )
+    hedge_order_tolerance_duration: float = (
+        CrossExchangeMarketMakingConfig.hedge_order_tolerance_duration
     )
     collect_price_samples_interval: int = (
         CrossExchangeMarketMakingConfig.collect_price_samples_interval
@@ -76,6 +81,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     _anti_order_adjust_timer: Dict[str, float] = {}
     _suggested_price_samples: Dict[str, Tuple[Deque[Decimal], Deque[Decimal]]] = {}
     _last_timestamp: float = 0.0
+    _pending_hedge_orders: DefaultDict[
+        str, List[Union[BuyOrderCreatedEvent, SellOrderCreatedEvent]]
+    ] = defaultdict(list)
 
     # HIGH LEVEL INTERFACES
     def on_tick(self) -> None:
@@ -98,7 +106,12 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
             return
 
-        timestamp = self.current_timestamp
+        if self.has_stale_pending_hedge_orders(trading_pair, timestamp):
+            self.logger().warning(
+                f"[{trading_pair}] There are stale pending hedge orders, raising this as a warning and skip placing new maker orders..."
+            )
+            return
+
         has_active_bid, has_active_ask = False, False
         anti_adjust_order_time = self._anti_order_adjust_timer.get(trading_pair, 0.0)
 
@@ -208,7 +221,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         slippage_factor = (
             Decimal("1") + self.hedge_slippage_buffer
             if is_buy
-            else Decimal("1") + self.hedge_slippage_buffer
+            else Decimal("1") - self.hedge_slippage_buffer
         )
         return price * slippage_factor
 
@@ -294,7 +307,18 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             return DECIMAL_ZERO
 
         order_amount = min(maker_balance_in_base, taker_balance_in_base, adjusted_size)
-        return maker_connector.quantize_order_price(trading_pair, Decimal(order_amount))
+        if order_amount < adjusted_size:
+            maker_exchange = self.maker_exchange
+            taker_exchange = self.taker_exchange
+            self.logger().warning(
+                f"[Maker exchange: {maker_exchange}, {trading_pair}] {order_amount=:.8f} is smaller than {adjusted_size=:.8f}. "
+                f"Based on maker exchange {maker_exchange} balance in {base_asset}: {maker_balance_in_base=:.8f}, "
+                f"and taker exchange {taker_exchange} balance in {base_asset}: {taker_balance_in_base=:.8f}."
+            )
+        quantized_order_amount = maker_connector.quantize_order_price(
+            trading_pair, Decimal(order_amount)
+        )
+        return quantized_order_amount
 
     def update_suggested_price_samples(
         self, trading_pair: str, timestamp: float
@@ -412,7 +436,59 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         return is_profitable
 
     async def is_sufficient_balance(self, trading_pair: str, order: LimitOrder) -> bool:
-        return False
+        is_buy, order_price = order.is_buy, order.price
+        maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
+        base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+
+        if is_buy:
+            # maker buy, taker sell
+            taker_balance_in_base = self._get_available_balance(
+                taker_exchange, base_asset
+            )
+            maker_balance_in_quote = self._get_available_balance(
+                maker_exchange, quote_asset
+            )
+            maker_balance_in_base = maker_balance_in_quote / order_price
+
+        else:
+            # maker sell, taker buy
+            maker_balance_in_base = self._get_available_balance(
+                maker_exchange, base_asset
+            )
+            taker_balance_in_quote = self._get_available_balance(
+                taker_exchange, quote_asset
+            )
+            # TODO: get_price_for_quote_volume is not used in any script-based example, is it working??
+            taker_price = (
+                self.connectors[taker_exchange]
+                .get_price_for_quote_volume(
+                    trading_pair, is_buy=True, volume=taker_balance_in_quote
+                )
+                .result_price
+            )
+            taker_price_with_slippage = self.get_price_with_slippage(
+                taker_price, is_buy=True
+            )
+            taker_balance_in_base = taker_balance_in_quote / taker_price_with_slippage
+
+        discounted_taker_balance_in_base = (
+            taker_balance_in_base * self.order_size_taker_balance_factor
+        )
+        order_size_limit = min(maker_balance_in_base, discounted_taker_balance_in_base)
+        quantized_order_size_limit = self.connectors[
+            maker_exchange
+        ].quantize_order_amount(trading_pair, order_size_limit)
+
+        if order.quantity > quantized_order_size_limit:
+            client_order_id = order.client_order_id
+            order_action = "BUY" if is_buy else "SELL"
+            self.logger().warning(
+                f"[{trading_pair}] Active maker {order_action} order ({client_order_id=}) "
+                f"doesnt have enough of balance to support: {order.quantity:.8f} > {quantized_order_size_limit:.8f}, where "
+                f"quantized_order_size_limit is the min of {maker_balance_in_base=} and {discounted_taker_balance_in_base=} ({taker_balance_in_base=})."
+            )
+            return False
+        return True
 
     def is_price_drifted(self, trading_pair: str, order: LimitOrder) -> bool:
         is_buy = order.is_buy
@@ -432,7 +508,19 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         return is_drifted
 
     def is_pending_hedge_orders(self, trading_pair: str) -> bool:
-        return True
+        return len(self._pending_hedge_orders[trading_pair]) > 0
+
+    def has_stale_pending_hedge_orders(
+        self, trading_pair: str, timestamp: float
+    ) -> bool:
+        return any(
+            [
+                o
+                for o in self._pending_hedge_orders[trading_pair]
+                if timestamp - o.creation_timestamp
+                >= self.hedge_order_tolerance_duration
+            ]
+        )
 
     # ORDER MANAGEMENT, E.G. QUERY, CANCEL, CREATE ORDERS
     def active_maker_orders(self, trading_pair: str) -> List[LimitOrder]:
@@ -559,10 +647,15 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         )
         return
 
+    def _is_order_belong_to_this_bot(self, trading_pair: str) -> bool:
+        return trading_pair in self.trading_pairs
+
     # EVENT HANDLING ON ORDER STATUS CHANGE
     def did_fill_order(self, event: OrderFilledEvent) -> None:
         order_id = event.order_id
-        if self._is_exchange_active_order(self.maker_exchange, order_id):
+        if self._is_exchange_active_order(
+            self.maker_exchange, order_id
+        ) and self._is_order_belong_to_this_bot(event.trading_pair):
             order_action = "BUY" if event.trade_type == TradeType.BUY else "SELL"
             base_asset, quote_asset = split_hb_trading_pair(event.trading_pair)
             self.logger().info(
@@ -579,11 +672,23 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
         return
 
+    def did_create_buy_order(self, event: BuyOrderCreatedEvent) -> None:
+        self._add_pending_hedge_order(event, is_buy=True)
+        return
+
+    def did_create_sell_order(self, event: SellOrderCreatedEvent) -> None:
+        self._add_pending_hedge_order(event, is_buy=False)
+        return
+
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent) -> None:
-        return self._log_complete_order_event(event, order_side="BUY")
+        self._log_complete_order_event(event, order_side="BUY")
+        self._remove_pending_hedge_order(event)
+        return
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent) -> None:
-        return self._log_complete_order_event(event, order_side="SELL")
+        self._log_complete_order_event(event, order_side="SELL")
+        self._remove_pending_hedge_order(event)
+        return
 
     def did_cancel_order(self, event: OrderCancelledEvent) -> None:
         self._log_abnormal_order_event(event, order_status="CANCELLED")
@@ -601,6 +706,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     ) -> None:
         # TODO: event doesn't contian order price, order amount, trading pair, find a way to recover them
         # TODO: add retry logic for taker hedge orders
+        # TODO: some order cancelledevent dosen't belong to this bot, how to filter them out?
         order_id = event.order_id
         maker_connector, taker_connector = self.maker_exchange, self.taker_exchange
         if self._is_exchange_active_order(taker_connector, order_id):
@@ -621,6 +727,61 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 f"and the order is {order_status} (Event: {event}). "
                 "Raise error logs here for suspicious behavior because this is suspicious!"
             )
+        return
+
+    def _add_pending_hedge_order(
+        self, event: Union[BuyOrderCreatedEvent, SellOrderCreatedEvent], is_buy: bool
+    ) -> None:
+        order_action = "BUY" if is_buy else "SELL"
+        taker_exchange = self.taker_exchange
+        order_id = event.order_id
+        if self._is_exchange_active(
+            taker_exchange, order_id
+        ) and self._is_order_belong_to_this_bot(event.trading_pair):
+            trading_pair, price, amount = event.trading_pair, event.price, event.amount
+            base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+            pending_hedge_orders = self._pending_hedge_orders[trading_pair]
+            self.logger().info(
+                f"[Taker exchange: {taker_exchange}, {trading_pair}] Taker {order_action} order as hedge is created at "
+                f"{amount:.8f} {base_asset} @ {price:.8f} {quote_asset} ({event=})."
+            )
+            self.logger().info(
+                f"[Taker exchange: {taker_exchange}, {trading_pair}] Appending the hedge order to {pending_hedge_orders}."
+            )
+            pending_hedge_orders.append(event)
+        return
+
+    def _remove_pending_hedge_order(
+        self, event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent]
+    ) -> None:
+        order_id, exchange_order_id = event.order_id, event.exchange_order_id
+        taker_exchange = self.taker_exchange
+        base_asset, quote_asset = event.base_asset, event.quote_asset
+        trading_pair = f"{base_asset}-{quote_asset}"
+        order_action = "BUY" if isinstance(event, BuyOrderCompletedEvent) else "SELL"
+        if self._is_exchange_active(
+            taker_exchange, order_id
+        ) and self._is_order_belong_to_this_bot(trading_pair):
+            self.logger().info(
+                f"[Taker exchange: {taker_exchange}, {trading_pair}] Taker {order_action} order as hedge is filled ({event=})."
+            )
+            pending_hedge_orders = self._pending_hedge_orders[trading_pair]
+            if exchange_order_id is not None:
+                self.logger().info(
+                    f"[Taker exchange: {taker_exchange}, {trading_pair}] Removing {order_action} order with {exchange_order_id=} from {pending_hedge_orders}."
+                )
+                self._pending_hedge_orders[trading_pair] = [
+                    o
+                    for o in pending_hedge_orders
+                    if o.exchange_order_id != exchange_order_id
+                ]
+            else:
+                self.logger().info(
+                    f"[Taker exchange: {taker_exchange}, {trading_pair}] Removing {order_action} order with {order_id=} from {pending_hedge_orders}."
+                )
+                self._pending_hedge_orders[trading_pair] = [
+                    o for o in pending_hedge_orders if o.order_id != order_id
+                ]
         return
 
     def _log_complete_order_event(
@@ -662,9 +823,10 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
     # FORMAT STATUS
     def format_status(self) -> str:
-        base_asset, quote_asset = split_hb_trading_pair(self.trading_pair)
+        trading_pair = "ETH-USDT"
+        base_asset, quote_asset = split_hb_trading_pair(trading_pair)
         usdt_conversion_rate = RateOracle.get_instance().get_pair_rate(
-            self.trading_pair
+            trading_pair
         )  # USD/BASE
         usd_conversion_rate = RateOracle.get_instance().get_pair_rate(
             f"{base_asset}-USD"
