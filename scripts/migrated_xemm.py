@@ -26,8 +26,8 @@ DECIMAL_ZERO = Decimal(0)
 
 
 class CrossExchangeMarketMakingConfig:
-    trading_pairs: Set[str] = {"ETH-USDT"}
-    base_order_amount: Decimal = Decimal("0.1")
+    trading_pairs: Set[str] = {"ARB-USDT"}
+    base_order_amount: Decimal = Decimal("1")
     taker_exchange: str = "kucoin"
     maker_exchange: str = "bybit"
     anti_order_adjust_duration: float = 60.0
@@ -40,7 +40,7 @@ class CrossExchangeMarketMakingConfig:
     # expressed in %, max. allowed slippage on limit taker order to ensure it is likely filled.
     hedge_slippage_buffer: float = 5.0
     # expressed in %
-    min_profitability: float = 0.40
+    min_profitability: float = 0.80
 
 
 # TODO: add expiry time for hedge order
@@ -83,6 +83,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     _pending_hedge_orders: DefaultDict[
         str, List[Union[BuyOrderCreatedEvent, SellOrderCreatedEvent]]
     ] = defaultdict(list)
+    # _is_cancel_trigger = False
 
     # HIGH LEVEL INTERFACES
     def on_tick(self) -> None:
@@ -115,6 +116,12 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
             return
 
+        # if self._is_cancel_trigger:
+        #     self.logger().info(
+        #         "is_cancel_trigger is True, skip processing the trading pair."
+        #     )
+        #     return
+
         has_active_bid, has_active_ask = False, False
         anti_adjust_order_time = self._anti_order_adjust_timer.get(trading_pair, 0.0)
 
@@ -141,6 +148,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                     "No buffer time before next maker order creation."
                 )
                 self.cancel_maker_order(trading_pair, active_order.client_order_id)
+                # self._is_cancel_trigger = True
                 continue
 
             if not await self.is_maker_order_still_profitable(
@@ -153,6 +161,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                     "No buffer time before next maker order creation."
                 )
                 self.cancel_maker_order(trading_pair, active_order.client_order_id)
+                # self._is_cancel_trigger = True
                 continue
 
             if not await self.is_sufficient_balance(trading_pair, active_order):
@@ -162,6 +171,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                     "No buffer time before next maker order creation."
                 )
                 self.cancel_maker_order(trading_pair, active_order.client_order_id)
+                # self._is_cancel_trigger = True
                 continue
 
             if (timestamp > anti_adjust_order_time) and (
@@ -179,6 +189,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 self._anti_order_adjust_timer[
                     trading_pair
                 ] = updated_anti_order_adjust_timestamp
+                # self._is_cancel_trigger = True
                 continue
 
         if has_active_bid and has_active_ask:
@@ -396,8 +407,8 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         return top_bid_price, top_ask_price
 
     def _should_collect_new_price_sample(self, timestamp: float) -> bool:
-        last_quotient = self._last_timestamp // self._price_sample_interval
-        this_quotient = timestamp // self._price_sample_interval
+        last_quotient = self._last_timestamp // self.collect_price_samples_interval
+        this_quotient = timestamp // self.collect_price_samples_interval
         return this_quotient > last_quotient
 
     def _get_adjusted_base_order_amount(self, trading_pair: str) -> Decimal:
@@ -425,9 +436,11 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
         else:
             adjusted_quote_balance = quote_balance
-        worst_order_price_in_quote = self.connectors[
-            connector_name
-        ].get_price_for_quote_volume(trading_pair, True, adjusted_quote_balance)
+        worst_order_price_in_quote = (
+            self.connectors[connector_name]
+            .get_price_for_quote_volume(trading_pair, True, adjusted_quote_balance)
+            .result_price
+        )
         return adjusted_quote_balance / worst_order_price_in_quote
 
     # CHECKING CRITERIA FOR ORDER CANCELLING
@@ -550,13 +563,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
     # ORDER MANAGEMENT, E.G. QUERY, CANCEL, CREATE ORDERS
     def active_maker_orders(self, trading_pair: str) -> List[LimitOrder]:
-        active_orders: List[LimitOrder] = [
-            order
-            for order in self.get_active_orders(connector_name=self.maker_exchange)
-            if order.trading_pair == trading_pair
-            and order.order_type == OrderType.LIMIT
-        ]
-        return active_orders
+        orders = self.order_tracker.active_limit_orders
+        connector = self.connectors[self.maker_exchange]
+        return [o[1] for o in orders if o[0] == connector]
 
     def cancel_maker_order(self, trading_pair: str, order_id: str) -> None:
         self.cancel(self.taker_exchange, trading_pair, order_id)
@@ -567,7 +576,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         # TODO: handle the case when order_size doesn't meet the minimum order size from taker exchange
         order_size = self.get_maker_order_size(trading_pair, is_bid)
         order_action = "BUY" if is_bid else "SELL"
-        maker_exchange = self.maker_exchange
+        maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
         if order_size <= DECIMAL_ZERO:
             self.logger().warning(
                 f"[M: {maker_exchange}, {trading_pair}] SKIP create maker {order_action} order with {order_size=:.8f} "
@@ -575,7 +584,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
             return
 
-        order_price = self.get_maker_price(trading_pair, True, order_size)
+        order_price = self.get_maker_price(trading_pair, is_bid, order_size)
         if order_price is None or Decimal.is_nan(order_price):
             self.logger().warning(
                 f"[M: {maker_exchange}, {trading_pair}] SKIP create maker {order_action} order with {order_size=:.8f} "
@@ -590,7 +599,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             f"{order_size:.8f} {base_asset} @ {order_price:.8f} {quote_asset}."
         )
         self.logger().info(
-            f"Maker order price is based on current taker hedging price: {taker_hedge_price:.8f} {quote_asset}."
+            f"Maker {order_action} order price is based on current hedging price: {taker_hedge_price:.8f} {quote_asset}, from {taker_exchange=}."
         )
         order_func = self.buy if is_bid else self.sell
         order_func(
@@ -753,7 +762,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         order_action = "BUY" if is_buy else "SELL"
         taker_exchange = self.taker_exchange
         order_id = event.order_id
-        if self._is_exchange_active(
+        if self._is_exchange_active_order(
             taker_exchange, order_id
         ) and self._is_order_belong_to_this_bot(event.trading_pair):
             trading_pair, price, amount = event.trading_pair, event.price, event.amount
@@ -777,7 +786,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         base_asset, quote_asset = event.base_asset, event.quote_asset
         trading_pair = f"{base_asset}-{quote_asset}"
         order_action = "BUY" if isinstance(event, BuyOrderCompletedEvent) else "SELL"
-        if self._is_exchange_active(
+        if self._is_exchange_active_order(
             taker_exchange, order_id
         ) and self._is_order_belong_to_this_bot(trading_pair):
             self.logger().info(
@@ -825,7 +834,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
                 f"[T: {taker_exchange}, {trading_pair}] Taker {order_side} order as hedge is COMPLETELY FILLED: "
                 f"{order_base_amount:.8f} {base_asset} ({order_id=}, {exchange_order_id=})."
             )
-        elif self._is_exchange_active_orders(maker_exchange, order_id):
+        elif self._is_exchange_active_order(maker_exchange, order_id):
             self.logger().info(
                 f"[M: {maker_exchange}, {trading_pair}] Maker {order_side} order is COMPLETELY FILLED: "
                 f"{order_base_amount:.8f} {base_asset} ({order_id=}, {exchange_order_id=})."
@@ -846,17 +855,12 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
     # FORMAT STATUS
     def format_status(self) -> str:
-        # trading_pair = "ETH-USDT"
-        # base_asset, quote_asset = split_hb_trading_pair(trading_pair)
-        # usdt_conversion_rate = RateOracle.get_instance().get_pair_rate(
-        #     trading_pair
-        # )  # USD/BASE
-        # usd_conversion_rate = RateOracle.get_instance().get_pair_rate(
-        #     f"{base_asset}-USD"
-        # )
-        # lines = [
-        #     "",
-        #     f"usdt_conversion_rate: {usdt_conversion_rate}",
-        #     f"usd_conversion_rate: {usd_conversion_rate}",
-        # ]
-        return "\n".join([])
+        lines = ["", "HELLO WORLD!!", ""]
+        active_maker_orders = self.active_maker_orders("ARB-USDT")
+        lines.append(f"Active Maker Orders: {len(lines)}")
+        order_lines = [
+            f"{o.client_order_id}::{o.price:.8f}::{o.quantity:.8f}::{o.filled_quantity:.8f}"
+            for o in active_maker_orders
+        ]
+        lines.extend(order_lines)
+        return "\n".join(lines)
