@@ -40,7 +40,7 @@ class CrossExchangeMarketMakingConfig:
     # expressed in %, max. allowed slippage on limit taker order to ensure it is likely filled.
     hedge_slippage_buffer: float = 5.0
     # expressed in %
-    min_profitability: float = 0.80
+    min_profitability: float = 0.03
 
 
 # TODO: add expiry time for hedge order
@@ -83,6 +83,8 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
     _pending_hedge_orders: DefaultDict[
         str, List[Union[BuyOrderCreatedEvent, SellOrderCreatedEvent]]
     ] = defaultdict(list)
+    _active_maker_order_ids = set()
+    _active_taker_order_ids = set()
 
     # HIGH LEVEL INTERFACES
     def on_tick(self) -> None:
@@ -671,11 +673,13 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
     # EVENT HANDLING ON ORDER STATUS CHANGE
     def did_fill_order(self, event: OrderFilledEvent) -> None:
+        if not self._is_order_belong_to_this_bot(event.trading_pair):
+            return
+
         order_id = event.order_id
         exchange_order_id = event.exchange_order_id
-        if self._is_exchange_active_order(
-            self.maker_exchange, order_id
-        ) and self._is_order_belong_to_this_bot(event.trading_pair):
+
+        if order_id in self._active_maker_order_ids:
             order_action = "BUY" if event.trade_type == TradeType.BUY else "SELL"
             base_asset, quote_asset = split_hb_trading_pair(event.trading_pair)
             self.logger().info(
@@ -693,67 +697,29 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         return
 
     def did_create_buy_order(self, event: BuyOrderCreatedEvent) -> None:
-        self._add_pending_hedge_order(event, is_buy=True)
+        self._log_and_handle_created_order(event, is_buy=True)
         return
 
     def did_create_sell_order(self, event: SellOrderCreatedEvent) -> None:
-        self._add_pending_hedge_order(event, is_buy=False)
+        self._log_and_handle_created_order(event, is_buy=False)
         return
 
     def did_complete_buy_order(self, event: BuyOrderCompletedEvent) -> None:
-        self._log_complete_order_event(event, order_side="BUY")
-        self._remove_pending_hedge_order(event)
+        self._log_and_handle_completed_order(event, order_action="BUY")
         return
 
     def did_complete_sell_order(self, event: SellOrderCompletedEvent) -> None:
-        self._log_complete_order_event(event, order_side="SELL")
-        self._remove_pending_hedge_order(event)
+        self._log_and_handle_completed_order(event, order_action="SELL")
         return
 
     def did_cancel_order(self, event: OrderCancelledEvent) -> None:
-        self._log_abnormal_order_event(event, order_status="CANCELLED")
+        self._log_and_handle_noncompleted_order(event, order_status="CANCELLED")
 
     def did_fail_order(self, event: MarketOrderFailureEvent) -> None:
-        self._log_abnormal_order_event(event, order_status="FAILED")
+        self._log_and_handle_noncompleted_order(event, order_status="FAILED")
 
     def did_expire_order(self, event: OrderExpiredEvent) -> None:
-        self._log_abnormal_order_event(event, order_status="EXPIRED")
-
-    def _log_abnormal_order_event(
-        self,
-        event: Union[OrderCancelledEvent, MarketOrderFailureEvent, OrderExpiredEvent],
-        order_status: str,
-    ) -> None:
-        # TODO: event doesn't contian order price, order amount, trading pair, find a way to recover them
-        # TODO: add retry logic for taker hedge orders
-        # TODO: some order cancelledevent dosen't belong to this bot, how to filter them out?
-        # order_id = event.order_id
-        # maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
-        # if self._is_exchange_active_order(taker_exchange, order_id):
-        #     self.logger().error(
-        #         f"[T: {taker_exchange}] Hedge order is {order_status} ({event=}). "
-        #         f"Raise error logs here for suspicious behavior but SKIP recreating hedge order."
-        #     )
-        # elif self._is_exchange_active_order(maker_exchange, order_id):
-        #     # normal to have maker orders cancelled
-        #     if not isinstance(event, OrderCancelledEvent):
-        #         self.logger().error(
-        #             f"[M: {maker_exchange}] Maker order is {order_status} ({event=}). "
-        #             "Raise error logs here for suspicious behavior but SKIP recreating maker order."
-        #         )
-        # else:
-        #     self.logger().warning(
-        #         f"Order is {order_status} ({event=}) but the order doesnt belong to {taker_exchange=} or {maker_exchange=}. "
-        #         "Raise error logs here for suspicious behavior because this is suspicious!"
-        #     )
-        order_id = event.order_id
-        if isinstance(event, OrderCancelledEvent):
-            self.logger().info(f"Order ({order_id=}) is {order_status}.")
-        else:
-            self.logger().warning(
-                f"Order ({order_id=}) is {order_status}, flagging this because it is not normal!"
-            )
-        return
+        self._log_and_handle_noncompleted_order(event, order_status="EXPIRED")
 
     def _add_pending_hedge_order(
         self, event: Union[BuyOrderCreatedEvent, SellOrderCreatedEvent], is_buy: bool
@@ -761,20 +727,17 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         order_action = "BUY" if is_buy else "SELL"
         taker_exchange = self.taker_exchange
         order_id = event.order_id
-        if self._is_exchange_active_order(
-            taker_exchange, order_id
-        ) and self._is_order_belong_to_this_bot(event.trading_pair):
-            trading_pair, price, amount = event.trading_pair, event.price, event.amount
-            base_asset, quote_asset = split_hb_trading_pair(trading_pair)
-            pending_hedge_orders = self._pending_hedge_orders[trading_pair]
-            self.logger().info(
-                f"[T: {taker_exchange}, {trading_pair}] {order_action} order as hedge is CREATED: "
-                f"{amount:.8f} {base_asset} @ {price:.8f} {quote_asset}."
-            )
-            self.logger().info(
-                f"Appending the hedge order ({event=}) to {pending_hedge_orders=}."
-            )
-            pending_hedge_orders.append(event)
+        trading_pair, price, amount = event.trading_pair, event.price, event.amount
+        base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+        pending_hedge_orders = self._pending_hedge_orders[trading_pair]
+        self.logger().info(
+            f"[T: {taker_exchange}, {trading_pair}] {order_action} order as hedge ({order_id=}) is CREATED: "
+            f"{amount:.8f} {base_asset} @ {price:.8f} {quote_asset}."
+        )
+        self.logger().info(
+            f"Appending the hedge order ({event=}) to {pending_hedge_orders=}."
+        )
+        pending_hedge_orders.append(event)
         return
 
     def _remove_pending_hedge_order(
@@ -785,63 +748,126 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         base_asset, quote_asset = event.base_asset, event.quote_asset
         trading_pair = f"{base_asset}-{quote_asset}"
         order_action = "BUY" if isinstance(event, BuyOrderCompletedEvent) else "SELL"
-        if self._is_exchange_active_order(
-            taker_exchange, order_id
-        ) and self._is_order_belong_to_this_bot(trading_pair):
+        self.logger().info(
+            f"[T: {taker_exchange}, {trading_pair}] {order_action} order as hedge is FILLED ({event=})."
+        )
+        pending_hedge_orders = self._pending_hedge_orders[trading_pair]
+        if exchange_order_id is not None:
             self.logger().info(
-                f"[T: {taker_exchange}, {trading_pair}] {order_action} order as hedge is FILLED ({event=})."
+                f"[T: {taker_exchange}, {trading_pair}] Removing {order_action} order ({exchange_order_id=}, {order_id=}) from pending_hedge_orders."
             )
-            pending_hedge_orders = self._pending_hedge_orders[trading_pair]
-            if exchange_order_id is not None:
-                self.logger().info(
-                    f"[T: {taker_exchange}, {trading_pair}] Removing {order_action} order ({exchange_order_id=}, {order_id=}) from pending_hedge_orders."
-                )
-                self.logger().info(
-                    f"pending_hedge_orders before the order removal: {pending_hedge_orders}"
-                )
-                self._pending_hedge_orders[trading_pair] = [
-                    o
-                    for o in pending_hedge_orders
-                    if o.exchange_order_id != exchange_order_id
-                ]
-            else:
-                self.logger().info(
-                    f"[T: {taker_exchange}, {trading_pair}] Removing {order_action} order ({order_id=}) from pending_hedge_orders."
-                )
-                self.logger().info(
-                    f"pending_hedge_orders before the order removal: {pending_hedge_orders}"
-                )
-                self._pending_hedge_orders[trading_pair] = [
-                    o for o in pending_hedge_orders if o.order_id != order_id
-                ]
+            self.logger().info(
+                f"pending_hedge_orders before the order removal: {pending_hedge_orders}"
+            )
+            self._pending_hedge_orders[trading_pair] = [
+                o
+                for o in pending_hedge_orders
+                if o.exchange_order_id != exchange_order_id
+            ]
+        else:
+            self.logger().info(
+                f"[T: {taker_exchange}, {trading_pair}] Removing {order_action} order ({order_id=}) from pending_hedge_orders."
+            )
+            self.logger().info(
+                f"pending_hedge_orders before the order removal: {pending_hedge_orders}"
+            )
+            self._pending_hedge_orders[trading_pair] = [
+                o for o in pending_hedge_orders if o.order_id != order_id
+            ]
         return
 
-    def _log_complete_order_event(
-        self,
-        event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent],
-        order_side: str,
+    def _log_and_handle_created_order(
+        self, event: Union[BuyOrderCreatedEvent, SellOrderCreatedEvent], is_buy: bool
     ) -> None:
-        order_id = event.order_id
-        exchange_order_id = event.exchange_order_id
-        base_asset, quote_asset = event.base_asset, event.quote_asset
-        trading_pair = f"{base_asset}-{quote_asset}"
-        order_base_amount = event.base_asset_amount
+        trading_pair = event.trading_pair
+        if not self._is_order_belong_to_this_bot(trading_pair):
+            return
 
         maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
-        if self._is_exchange_active_order(taker_exchange, order_id):
+        if self._is_exchange_active_order(self.taker_exchange, event.order_id):
+            self._add_pending_hedge_order(event, is_buy=is_buy)
+            self._active_taker_order_ids.add(event.order_id)
             self.logger().info(
-                f"[T: {taker_exchange}, {trading_pair}] Taker {order_side} order as hedge is COMPLETELY FILLED: "
+                f"[T: {taker_exchange}, {trading_pair}] Active taker orders after addition: {self._active_taker_order_ids}."
+            )
+        elif self._is_exchange_active_order(self.maker_exchange, event.order_id):
+            self._active_maker_order_ids.add(event.order_id)
+            self.logger().info(
+                f"[M: {maker_exchange}, {trading_pair}] Active maker orders after addition: {self._active_maker_order_ids}."
+            )
+        else:
+            order_id, exchange_order_id = event.order_id, event.exchange_order_id
+            self.logger().warning(
+                f"[{trading_pair}] Unknow order is CREATED but it doesnt belong to "
+                f"{taker_exchange=} or {maker_exchange=} ({order_id=}, {exchange_order_id=})."
+            )
+        return
+
+    def _log_and_handle_noncompleted_order(
+        self,
+        event: Union[MarketOrderFailureEvent, OrderExpiredEvent, OrderCancelledEvent],
+        order_status: str,
+    ) -> None:
+        order_id = event.order_id
+        maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
+        if order_id in self._active_maker_order_ids:
+            self._active_maker_order_ids.remove(order_id)
+            self.logger().info(
+                f"[M: {maker_exchange}] Order ({order_id=}) is {order_status}. "
+                f"Active maker orders after its removal: {self._active_maker_order_ids}"
+            )
+        elif order_id in self._active_taker_order_ids:
+            self._active_taker_order_ids.remove(order_id)
+            self.logger().info(
+                f"[T: {taker_exchange}] Order ({order_id=}) is {order_status}. "
+                f"Active taker orders after its removal: {self._active_taker_order_ids}"
+            )
+        else:
+            self.logger().warning(f"Unknown order ({order_id=}) is {order_status}.")
+            self.logger().info(
+                f"{self._active_maker_order_ids=}, {self._active_taker_order_ids=}."
+            )
+        return
+
+    def _log_and_handle_completed_order(
+        self,
+        event: Union[BuyOrderCompletedEvent, SellOrderCompletedEvent],
+        order_action: str,
+    ) -> None:
+        base_asset, quote_asset = event.base_asset, event.quote_asset
+        trading_pair = f"{base_asset}-{quote_asset}"
+        if not self._is_order_belong_to_this_bot(trading_pair):
+            return
+
+        order_id, exchange_order_id = event.order_id, event.exchange_order_id
+        maker_exchange, taker_exchange = self.maker_exchange, self.taker_exchange
+        order_base_amount = event.base_asset_amount
+        if order_id in self._active_maker_order_ids:
+            self.logger().info(
+                f"[M: {maker_exchange}, {trading_pair}] Maker {order_action} order is COMPLETELY FILLED: "
                 f"{order_base_amount:.8f} {base_asset} ({order_id=}, {exchange_order_id=})."
             )
-        elif self._is_exchange_active_order(maker_exchange, order_id):
+            self._active_maker_order_ids.remove(order_id)
             self.logger().info(
-                f"[M: {maker_exchange}, {trading_pair}] Maker {order_side} order is COMPLETELY FILLED: "
+                f"[M: {maker_exchange}, {trading_pair}] Active maker orders after its removal: {self._active_maker_order_ids}."
+            )
+        elif order_id in self._active_taker_order_ids:
+            self.logger().info(
+                f"[T: {taker_exchange}, {trading_pair}] Taker {order_action} order as hedge is COMPLETELY FILLED: "
                 f"{order_base_amount:.8f} {base_asset} ({order_id=}, {exchange_order_id=})."
+            )
+            self._remove_pending_hedge_order(event)
+            self._active_taker_order_ids.remove(order_id)
+            self.logger().info(
+                f"[T: {taker_exchange}, {trading_pair}] Active taker orders after its removal: {self._active_taker_order_ids}."
             )
         else:
             self.logger().warning(
-                f"[{trading_pair}] Unknown order is COMPLETELY FILLED but it doesnt belong to "
+                f"[{trading_pair}] Unknow order is COMPLETELY FILLED but it doesnt belong to "
                 f"{taker_exchange=} or {maker_exchange=} ({order_id=}, {exchange_order_id=})."
+            )
+            self.logger().info(
+                f"{self._active_maker_order_ids=}, {self._active_taker_order_ids=}."
             )
         return
 
