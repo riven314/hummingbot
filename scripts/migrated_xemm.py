@@ -148,10 +148,9 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             if not await self.is_maker_order_still_profitable(
                 trading_pair, active_order, current_hedge_price
             ):
-                min_profitability_percent = self.min_profitability * 100
                 self.logger().info(
                     f"[M: {maker_exchange}, {trading_pair}] Maker {order_action} order ({client_order_id=}) "
-                    f"is CANCELLING because it is no longer profitable ({min_profitability_percent=:.3f}%). "
+                    f"is CANCELLING because it is no longer profitable. "
                     "No buffer time before next maker order creation."
                 )
                 self.cancel_maker_order(trading_pair, active_order.client_order_id)
@@ -194,6 +193,17 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         return
 
     # CALCULATING PRICES
+    def get_price_shift(self, trading_pair: str) -> Decimal:
+        maker_top_bid, maker_top_ask = self._get_top_bid_ask_price(
+            self.maker_exchange, trading_pair
+        )
+        taker_top_bid, taker_top_ask = self._get_top_bid_ask_price(
+            self.taker_exchange, trading_pair
+        )
+        maker_mid_price = (maker_top_bid + maker_top_ask) / Decimal(2)
+        taker_mid_price = (taker_top_bid + taker_top_ask) / Decimal(2)
+        return maker_mid_price - taker_mid_price
+
     def get_taker_hedge_price(
         self, trading_pair: str, is_taker_buy: bool, base_order_size: Decimal
     ) -> Optional[Decimal]:
@@ -244,11 +254,12 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             )
             return taker_price
 
+        price_shift = self.get_price_shift(trading_pair)
         maker_price = (
             taker_price / (1 + self.min_profitability)
             if is_bid
             else taker_price * (1 + self.min_profitability)
-        )
+        ) + price_shift
 
         # TODO: add feature to conditionally put price slightly better than top bid/ top ask
         maker_connector = self.connectors[self.maker_exchange]
@@ -357,7 +368,7 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         (
             current_top_bid_price,
             current_top_ask_price,
-        ) = self._get_maker_top_bid_ask_price(trading_pair)
+        ) = self._get_top_bid_ask_price(self.maker_exchange, trading_pair)
         (
             bid_price_samples,
             ask_price_samples,
@@ -386,15 +397,11 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         default_return: Tuple[deque, deque] = deque(), deque()
         return self._suggested_price_samples.get(trading_pair, default_return)
 
-    def _get_maker_top_bid_ask_price(
-        self, trading_pair: str
+    def _get_top_bid_ask_price(
+        self, connector_name: str, trading_pair: str
     ) -> Tuple[Decimal, Decimal]:
-        top_ask_price = self.connectors[self.maker_exchange].get_price(
-            trading_pair, True
-        )
-        top_bid_price = self.connectors[self.maker_exchange].get_price(
-            trading_pair, False
-        )
+        top_ask_price = self.connectors[connector_name].get_price(trading_pair, True)
+        top_bid_price = self.connectors[connector_name].get_price(trading_pair, False)
         return top_bid_price, top_ask_price
 
     def _should_collect_new_price_sample(self, timestamp: float) -> bool:
@@ -449,10 +456,17 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
         # TODO: set expected vs ideal profitability, cancel when its worse than expected
         is_maker_buy = order.is_buy
         order_price = order.price
+        price_shift = self.get_price_shift(trading_pair)
         if is_maker_buy:
-            is_profitable = order_price <= hedge_price / (1 + self.min_profitability)
+            reference_maker_price = (
+                hedge_price / (1 + self.min_profitability) + price_shift
+            )
+            is_profitable = order_price <= reference_maker_price
         else:
-            is_profitable = order_price >= hedge_price * (1 + self.min_profitability)
+            reference_maker_price = (
+                hedge_price * (1 + self.min_profitability) + price_shift
+            )
+            is_profitable = order_price >= reference_maker_price
 
         if not is_profitable:
             client_order_id = order.client_order_id
@@ -462,8 +476,11 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
             min_profitability_percent = self.min_profitability * 100
             self.logger().info(
                 f"[M: {maker_exchange}, {trading_pair}] Maker {order_action} order ({client_order_id=}) "
-                f"is no longer profitable ({min_profitability_percent=:.3f}% and {hedge_price=:.8f}): "
                 f"{amount:.8f} {base_asset} @ {price:.8f} {quote_asset}."
+                f"is no longer profitable."
+            )
+            self.logger().info(
+                f"{min_profitability_percent=:.3f}%, {hedge_price=:.8f} {quote_asset} and {price_shift=:.8f} {quote_asset}."
             )
         return is_profitable
 
@@ -587,12 +604,17 @@ class CrossExchangeMarketMaking(ScriptStrategyBase):
 
         taker_hedge_price = self.get_taker_hedge_price(trading_pair, is_bid, order_size)
         base_asset, quote_asset = split_hb_trading_pair(trading_pair)
+        price_shift = self.get_price_shift(trading_pair)
+        min_profitability_percent = self.min_profitability * 100
         self.logger().info(
             f"[M: {maker_exchange}, {trading_pair}] CREATING maker {order_action} order: "
             f"{order_size:.8f} {base_asset} @ {order_price:.8f} {quote_asset}."
         )
         self.logger().info(
-            f"Maker {order_action} order price is based on current hedging price: {taker_hedge_price:.8f} {quote_asset}, from {taker_exchange=}."
+            f"Maker {order_action} order price is based on "
+            f"current hedging price: {taker_hedge_price:.8f} {quote_asset} from {taker_exchange=}, "
+            f"price shift (maker mid price - taker mid price): {price_shift:.8f} {quote_asset}, "
+            f"and min profitability: {min_profitability_percent:.2f}%."
         )
         order_func = self.buy if is_bid else self.sell
         order_func(
