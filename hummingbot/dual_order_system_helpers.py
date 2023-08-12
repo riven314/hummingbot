@@ -344,19 +344,32 @@ class OffsetShiftOrderManager(ShiftOrderManager):
         base: str,
         quote: str,
         min_profitability_percent: Decimal,
-        price_shift_profit_percent: Decimal,
         price_shift_discount_percent: Decimal,
-        offset_job_maker_order_id: str,
     ) -> None:
         super().__init__(
             maker_exchange, taker_exchange, base, quote, min_profitability_percent
         )
-        self.price_shift_profit_percent = price_shift_profit_percent
-        self.price_shift_discount_percent = price_shift_discount_percent
-        self.offset_job_maker_order_id = offset_job_maker_order_id
         self.is_offset_shift = True
+        self.price_shift_discount_percent = price_shift_discount_percent
+        # below params are not None until a job is assigned
+        self.price_shift_profit_percent: Optional[Decimal] = None
+        self.offset_job_maker_order_id: Optional[str] = None
+
+    def assign_offset_job(
+        self, maker_order_id: str, price_shift_profit_percent: Decimal
+    ) -> None:
+        self.offset_job_maker_order_id = maker_order_id
+        self.price_shift_profit_percent = price_shift_profit_percent
+        return
+
+    def is_assign_offset_job(self) -> bool:
+        return (
+            self.offset_job_maker_order_id is not None
+            and self.price_shift_profit_percent is not None
+        )
 
     def propose_maker_price(self, taker_ref_price: Decimal, is_bid: bool) -> Decimal:
+        assert self.is_assign_offset_job(), "Offset job is not assigned yet"
         if is_bid:
             maker_price = (
                 taker_ref_price
@@ -374,14 +387,22 @@ class OffsetShiftOrderManager(ShiftOrderManager):
     # e.g. we earn 0.5% price shift previously, and price shift discount = 50%, then this time price shift can't loss more than 0.25%
     @property
     def discounted_price_shift_percent(self) -> Decimal:
+        assert self.price_shift_profit_percent is not None, "Price shift profit is None"
         return self.price_shift_profit_percent * (
             self.price_shift_discount_percent / 100
         )
 
+    def reset(self) -> None:
+        assert self.maker_order is not None, "Maker order is not created yet"
+        self.offset_job_maker_order_id = None
+        self.price_shift_profit_percent = None
+        self.maker_order = None
+        self.hedge_orders = []
+
 
 class PendingOffsetJobs:
     def __init__(self) -> None:
-        self.jobs: list[CycleMetadata] = []
+        self.jobs: List[CycleMetadata] = []
 
     def is_empty(self) -> bool:
         return len(self.jobs) == 0
