@@ -32,11 +32,25 @@ class MakerOrder(BaseModel):
     quote: str
     status: OrderStatus
     side: OrderSide
-    created_utc_time: datetime
-    completed_utc_time: Optional[datetime] = None
+    created_timestamp: float
+    completed_timestamp: Optional[float] = None
 
     # class Config:
     #     validate_assignment = True
+
+
+maker_order = MakerOrder(
+    order_id="1",
+    exchange_order_id="1",
+    exchange="1",
+    price=Decimal("1"),
+    base_amount=Decimal("1"),
+    base="1",
+    quote="1",
+    status=OrderStatus.CREATED,
+    side=OrderSide.BID,
+    created_timestamp=datetime.timestamp(datetime.utcnow()),
+)
 
 
 class HedgeOrder(MakerOrder):
@@ -70,8 +84,8 @@ class GroupedTradeData(BaseModel):
     base: str
     quote: str
     side: OrderSide
-    created_utc_time: datetime
-    completed_utc_time: Optional[datetime] = None
+    created_timestamp: float
+    completed_timestamp: Optional[float] = None
 
 
 class CSVWriter:
@@ -113,24 +127,34 @@ class ShiftOrderManager:
         self.hedge_orders: List[HedgeOrder] = []
         self.is_offset_shift = False
         # state to manage
-        self._creating_maker_order_timestamp: Optional[int]
-        self._creating_hedge_order_timestamp: Optional[int]
+        self._creating_maker_order_timestamp: Optional[float]
+        self._creating_hedge_order_timestamp: Optional[float]
         # helper class
-        self.csv_write = CSVWriter(self.csv_path)
+        self.csv_writer = CSVWriter(self.csv_path)
 
-    def set_creating_maker_order_timestamp(self, timestamp: int) -> None:
+    @property
+    def csv_filename(self) -> str:
+        return self.csv_writer.filename
+
+    def is_idle(self) -> bool:
+        return self.maker_order is None and self._creating_maker_order_timestamp is None
+
+    def set_creating_maker_order_timestamp(self, timestamp: float) -> None:
         self._creating_maker_order_timestamp = timestamp
 
-    def set_creating_hedge_orders(self, timestamp: int) -> None:
+    def set_creating_hedge_orders(self, timestamp: float) -> None:
         self._creating_hedge_order_timestamp = timestamp
 
     def is_creating_maker_order(self) -> bool:
         return self._creating_maker_order_timestamp is not None
 
-    def is_creating_hedge_orders(self) -> bool:
-        return self._creating_hedge_order_timestamp is not None
+    def is_hedge_in_progress(self) -> bool:
+        return (
+            self._creating_hedge_order_timestamp is not None
+            or len(self.hedge_orders) > 0
+        )
 
-    def is_creating_maker_order_too_long(self, ref_timestamp: int) -> bool:
+    def is_creating_maker_order_too_long(self, ref_timestamp: float) -> bool:
         assert (
             self._creating_maker_order_timestamp is not None
         ), "Creating maker order timestamp is not set yet"
@@ -138,16 +162,13 @@ class ShiftOrderManager:
             ref_timestamp - self._creating_maker_order_timestamp
         ) >= self.creating_order_tolerance_in_seconds
 
-    def is_creating_hedge_order_too_long(self, ref_timestamp: int) -> bool:
+    def is_creating_hedge_order_too_long(self, ref_timestamp: float) -> bool:
         assert (
             self._creating_hedge_order_timestamp is not None
         ), "Creating hedge order timestamp is not set yet"
         return (
             ref_timestamp - self._creating_hedge_order_timestamp
         ) >= self.creating_order_tolerance_in_seconds
-
-    def is_hedging_in_progress(self) -> bool:
-        return self.is_creating_hedge_orders() or len(self.hedge_orders) > 0
 
     def is_maker_order(self, order_id: str) -> bool:
         return self.maker_order is not None and self.maker_order.order_id == order_id
@@ -184,7 +205,7 @@ class ShiftOrderManager:
             quote=self.quote,
             status=OrderStatus.CREATED,
             side=order_side,
-            created_utc_time=datetime.utcnow(),
+            created_timestamp=datetime.timestamp(datetime.utcnow()),
         )
         self._creating_maker_order_timestamp = None
         return
@@ -220,7 +241,7 @@ class ShiftOrderManager:
             side=order_side,
             maker_order_id=self.maker_order.order_id,
             maker_exchange_order_id=self.maker_order.exchange_order_id,
-            created_utc_time=datetime.utcnow(),
+            created_timestamp=datetime.timestamp(datetime.utcnow()),
         )
         self.hedge_orders.append(hedge_order)
         self._creating_hedge_order_timestamp = None
@@ -290,8 +311,8 @@ class ShiftOrderManager:
             base=self.maker_order.base,
             quote=self.maker_order.quote,
             side=self.maker_order.side,
-            created_utc_time=self.maker_order.created_utc_time,
-            completed_utc_time=self.maker_order.completed_utc_time,
+            created_timestamp=self.maker_order.created_timestamp,
+            completed_timestamp=self.maker_order.completed_timestamp,
         )
         trade_data.append(maker_trade_data)
         for trade in self._get_completed_hedge_orders():
@@ -307,17 +328,20 @@ class ShiftOrderManager:
                     base=trade.base,
                     quote=trade.quote,
                     side=trade.side,
-                    created_utc_time=trade.created_utc_time,
-                    completed_utc_time=trade.completed_utc_time,
+                    created_timestamp=trade.created_timestamp,
+                    completed_timestamp=trade.completed_timestamp,
                 )
             )
-        self.csv_write.write_data(trade_data)
+        self.csv_writer.write_data(trade_data)
         return
 
     def reset(self) -> None:
         assert self.maker_order is not None, "Maker order is not created yet"
         self.maker_order = None
         self.hedge_orders = []
+        self._creating_hedge_order_timestamp = None
+        self._creating_hedge_order_timestamp = None
+        return
 
     def _get_hedge_order(self, order_id: str) -> HedgeOrder:
         hedge_order = [
@@ -398,6 +422,9 @@ class OffsetShiftOrderManager(ShiftOrderManager):
         self.price_shift_profit_percent = None
         self.maker_order = None
         self.hedge_orders = []
+        self._creating_hedge_order_timestamp = None
+        self._creating_hedge_order_timestamp = None
+        return
 
 
 class PendingOffsetJobs:
