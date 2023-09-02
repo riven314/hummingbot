@@ -13,6 +13,7 @@ class OrderStatus(Enum):
     CREATED = "CREATED"
     CANCELED = "CANCELED"
     FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
     PARTIAL_FILLED = "PARTIAL_FILLED"
     COMPLETE_FILLED = "COMPLETE_FILLED"
 
@@ -152,6 +153,12 @@ class ShiftOrderManager:
         return (
             self._creating_hedge_order_timestamp is not None
             or len(self.hedge_orders) > 0
+        )
+
+    def is_maker_order_partially_filled(self) -> bool:
+        return (
+            self.maker_order is not None
+            and self.maker_order.status == OrderStatus.PARTIAL_FILLED
         )
 
     def is_creating_maker_order_too_long(self, ref_timestamp: float) -> bool:
@@ -360,6 +367,8 @@ class ShiftOrderManager:
         assert len(self.hedge_orders) > 0, "Hedge orders are not created yet"
 
 
+# TODO: handle the case when the job has price_shift_profit_percent < 0
+# ans: only consider the case when maker ask is higher than taker ask by min_profit
 class OffsetShiftOrderManager(ShiftOrderManager):
     def __init__(
         self,
@@ -386,26 +395,42 @@ class OffsetShiftOrderManager(ShiftOrderManager):
         self.price_shift_profit_percent = price_shift_profit_percent
         return
 
-    def is_assign_offset_job(self) -> bool:
-        return (
-            self.offset_job_maker_order_id is not None
-            and self.price_shift_profit_percent is not None
-        )
-
     def propose_maker_price(self, taker_ref_price: Decimal, is_bid: bool) -> Decimal:
-        assert self.is_assign_offset_job(), "Offset job is not assigned yet"
-        if is_bid:
-            maker_price = (
-                taker_ref_price
-                / (1 + self.min_profitability_percent / 100)
-                / (1 + self.discounted_price_shift_percent / 100)
-            )
+        assert (
+            self.price_shift_profit_percent is not None
+            and self.offset_job_maker_order_id is not None
+        ), "Offset job is not assigned yet"
+
+        if self.price_shift_profit_percent > 0:
+            allowable_loss_percent = Decimal("-1") * self.discounted_price_shift_percent
+            if is_bid:
+                maker_price = (
+                    taker_ref_price
+                    / (1 + self.min_profitability_percent / 100)
+                    * (1 + allowable_loss_percent / 100)
+                )
+            else:
+                maker_price = (
+                    taker_ref_price
+                    * (1 + self.min_profitability_percent / 100)
+                    / (1 + allowable_loss_percent / 100)
+                )
+
+        # don't make any discount if previous incurred loss on price shift, it will make the order even harder to be filled
         else:
-            maker_price = (
-                taker_ref_price
-                * (1 + self.min_profitability_percent / 100)
-                * (1 + self.discounted_price_shift_percent / 100)
-            )
+            loss_to_recover_in_percent = Decimal("-1") * self.price_shift_profit_percent
+            if is_bid:
+                maker_price = (
+                    taker_ref_price
+                    / (1 + self.min_profitability_percent / 100)
+                    / (1 + loss_to_recover_in_percent / 100)
+                )
+            else:
+                maker_price = (
+                    taker_ref_price
+                    * (1 + self.min_profitability_percent / 100)
+                    * (1 + loss_to_recover_in_percent / 100)
+                )
         return maker_price
 
     # e.g. we earn 0.5% price shift previously, and price shift discount = 50%, then this time price shift can't loss more than 0.25%
@@ -421,7 +446,7 @@ class OffsetShiftOrderManager(ShiftOrderManager):
         self.offset_job_maker_order_id = None
         self.price_shift_profit_percent = None
         self.maker_order = None
-        self.hedge_orders = []
+        self.hedge_orders.clear()
         self._creating_hedge_order_timestamp = None
         self._creating_hedge_order_timestamp = None
         return
@@ -434,8 +459,8 @@ class PendingOffsetJobs:
     def is_empty(self) -> bool:
         return len(self.jobs) == 0
 
-    def peek(self) -> Optional[CycleMetadata]:
-        return None if len(self.jobs) == 0 else self.jobs[0]
+    def peek(self) -> CycleMetadata:
+        return self.jobs[0]
 
     def add(self, job: CycleMetadata) -> None:
         self.jobs.append(job)
@@ -452,3 +477,6 @@ class PendingOffsetJobs:
             raise ValueError(
                 f"Maker order id {maker_order_id} not found, failed to remove it from PendingOffsetJobs"
             )
+
+    def __len__(self) -> int:
+        return len(self.jobs)
