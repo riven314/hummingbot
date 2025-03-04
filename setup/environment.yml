@@ -64,5 +64,7 @@ dependencies:
     - web3>=6.2.0,<7.0.0
     - websockets
     - yarl==1.*
-    - xrpl-py==3.0.0
+    # upgrade xrpl-py to avoid conflict with python-telegram-bot
+    - xrpl-py==4.1.0
     - lyra_v2_action_signing==0.0.3
+    - python-telegram-bot==21.11.1
