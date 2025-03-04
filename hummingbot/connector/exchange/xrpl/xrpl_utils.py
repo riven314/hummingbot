@@ -12,8 +12,8 @@ from xrpl.asyncio.transaction import XRPLReliableSubmissionException
 from xrpl.asyncio.transaction.main import (
     _LEDGER_OFFSET,
     _calculate_fee_per_transaction_type,
-    _get_network_id_and_build_version,
     _tx_needs_networkID,
+    get_network_id_and_build_version,
 )
 from xrpl.models import Request, Response, Transaction, TransactionMetadata, Tx
 from xrpl.models.requests.request import LookupByLedgerRequest, RequestMethod
@@ -198,7 +198,7 @@ async def autofill(
     try:
         transaction_json = transaction.to_dict()
         if not client.network_id:
-            await _get_network_id_and_build_version(client)
+            await get_network_id_and_build_version(client)
         if "network_id" not in transaction_json and _tx_needs_networkID(client):
             transaction_json["network_id"] = client.network_id
         if "sequence" not in transaction_json:
