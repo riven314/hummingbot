@@ -152,7 +152,7 @@ class TradeFeeBase(ABC):
         first_flat_fee_token = None
         if len(self.flat_fees) > 0:
             first_flat_fee_token = self.flat_fees[0].token
-        return self.percent_token or first_flat_fee_token
+        return first_flat_fee_token or self.percent_token
 
     @abstractmethod
     def get_fee_impact_on_order_cost(
