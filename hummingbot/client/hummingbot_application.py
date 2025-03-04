@@ -332,6 +332,12 @@ class HummingbotApplication(*commands):
             self._mqtt.start_market_events_fw()
 
     def _initialize_notifiers(self):
+        self.notifiers.extend(
+            [
+                notifier for notifier in self.client_config_map.telegram_mode.get_notifiers(self)
+                if notifier not in self.notifiers
+            ]
+        )
         for notifier in self.notifiers:
             notifier.start()
 
