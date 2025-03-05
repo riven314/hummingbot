@@ -47,6 +47,7 @@ class TelegramNotifier(NotifierBase):
 
     def start(self) -> None:
         if self._started:
+            self.logger().info("Telegram notifier already started.")
             return
 
         self._application = Application.builder().token(self._token).build()
@@ -60,7 +61,7 @@ class TelegramNotifier(NotifierBase):
         self._application.add_handler(CommandHandler("config", self.handler))
 
         # Use safe_ensure_future to handle the async initialization
-        safe_ensure_future(self._initialize_application())
+        safe_ensure_future(self._initialize_application(), loop=self._ev_loop)
 
         super().start()
         self.logger().info("Telegram notifier started.")
@@ -78,12 +79,10 @@ class TelegramNotifier(NotifierBase):
 
     def stop(self) -> None:
         super().stop()
-
-        if self._application is not None:
+        self.logger().info("Telegram notifier stopping...")
+        if self._application and self._application.running:
             # Use safe_ensure_future to handle the async shutdown
-            safe_ensure_future(self._shutdown_application())
-            self._application = None
-
+            safe_ensure_future(self._shutdown_application(), loop=self._ev_loop)
         self._started = False
         self.logger().info("Telegram notifier stopped.")
 
@@ -92,7 +91,7 @@ class TelegramNotifier(NotifierBase):
             await self._application.updater.stop()
             await self._application.stop()
             await self._application.shutdown()
-            self.logger().info("Telegram application fully shutdown.")
+            self._application = None
         except Exception as e:
             self.logger().error(f"Error shutting down Telegram application: {e}", exc_info=True)
 

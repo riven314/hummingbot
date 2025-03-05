@@ -19,13 +19,14 @@ class NotifierBase:
         self._started = False
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._send_message_task: Optional[asyncio.Task] = None
+        self._ev_loop = asyncio.get_event_loop()
 
     def add_message_to_queue(self, message: str):
         self._message_queue.put_nowait(message)
 
     def start(self):
         if self._send_message_task is None:
-            self._send_message_task = safe_ensure_future(self.send_message_from_queue())
+            self._send_message_task = safe_ensure_future(self.send_message_from_queue(), loop=self._ev_loop)
 
     def stop(self):
         if self._send_message_task:

@@ -48,6 +48,11 @@ class StopCommand:
         if self.strategy_task is not None and not self.strategy_task.cancelled():
             self.strategy_task.cancel()
 
+        self.logger().info("Winding down notifiers...")
+        self.notify("Winding down notifiers...")
+        for notifier in self.notifiers:
+            notifier.stop()
+
         if RateOracle.get_instance().started:
             RateOracle.get_instance().stop()
 
