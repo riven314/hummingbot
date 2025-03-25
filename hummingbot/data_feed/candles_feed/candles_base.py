@@ -403,7 +403,6 @@ class CandlesBase(NetworkBase):
         async for ws_response in websocket_assistant.iter_messages():
             data = ws_response.data
             parsed_message = self._parse_websocket_message(data)
-            self.logger().info(f"Parsed message: {parsed_message}")
             # parsed messages may be ping or pong messages
             if isinstance(parsed_message, WSJSONRequest):
                 await websocket_assistant.send(request=parsed_message)
@@ -436,7 +435,7 @@ class CandlesBase(NetworkBase):
                 await asyncio.wait_for(self._process_websocket_messages_task(websocket_assistant=websocket_assistant),
                                        timeout=self._ping_timeout)
             except asyncio.TimeoutError:
-                self.logger().info(
+                self.logger().warning(
                     "Timeout when processing public klines websocket messages. Sending ping request..."
                 )
                 if self._ping_timeout is not None:
