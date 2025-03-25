@@ -19,6 +19,7 @@ class BybitPerpetualCandles(CandlesBase):
 
     def __init__(self, trading_pair: str, interval: str = "1m", max_records: int = 150):
         super().__init__(trading_pair, interval, max_records)
+        self._ping_timeout = 30
 
     @property
     def name(self):

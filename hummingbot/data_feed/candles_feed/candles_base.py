@@ -56,7 +56,7 @@ class CandlesBase(NetworkBase):
         self._trading_pair = trading_pair
         self._ex_trading_pair = self.get_exchange_trading_pair(trading_pair)
         self._ws_candle_available = asyncio.Event()
-        self._ping_timeout = None
+        self._ping_timeout: Optional[int] = None
         if interval in self.intervals.keys():
             self.interval = interval
         else:
@@ -403,6 +403,7 @@ class CandlesBase(NetworkBase):
         async for ws_response in websocket_assistant.iter_messages():
             data = ws_response.data
             parsed_message = self._parse_websocket_message(data)
+            self.logger().info(f"Parsed message: {parsed_message}")
             # parsed messages may be ping or pong messages
             if isinstance(parsed_message, WSJSONRequest):
                 await websocket_assistant.send(request=parsed_message)
@@ -435,6 +436,9 @@ class CandlesBase(NetworkBase):
                 await asyncio.wait_for(self._process_websocket_messages_task(websocket_assistant=websocket_assistant),
                                        timeout=self._ping_timeout)
             except asyncio.TimeoutError:
+                self.logger().info(
+                    "Timeout when processing public klines websocket messages. Sending ping request..."
+                )
                 if self._ping_timeout is not None:
                     ping_request = WSJSONRequest(payload=self._ping_payload)
                     await websocket_assistant.send(request=ping_request)
