@@ -21,6 +21,9 @@ from hummingbot.data_feed.open_interest_market_cap.token_supply_providers import
 from hummingbot.logger import HummingbotLogger
 
 
+# TODO: add retry on each provider
+# TODO: handle OpenInterestData or TokenSupplyData has None value on critical fields
+# TODO: check and handle obsolete data at get_open_interest_to_market_cap_ratio
 class OpenInterestMarketCapFeed(DataFeedBase, ABC):
     oi_mcap_logger: Optional[HummingbotLogger] = None
     _oi_mcap_shared_instance: Optional["OpenInterestMarketCapFeed"] = None
@@ -38,8 +41,9 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         self._open_interest_provider = BinanceOpenInterestProvider(self._config.trading_pair)
         self._token_supply_provider = CoinGeckoTokenSupplyProvider(self.token_id)
         self._fallback_token_supply_provider = CoinCapTokenSupplyProvider(self.token_id)
-        self._latest_open_interest: Optional[OpenInterestData] = None
-        self._latest_token_supply: Optional[TokenSupplyData] = None
+        self._last_open_interest: Optional[OpenInterestData] = None
+        self._last_token_supply: Optional[TokenSupplyData] = None
+        self._last_fallback_token_supply: Optional[TokenSupplyData] = None
 
     @property
     def token_id(self) -> str:
@@ -53,7 +57,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
     @property
     def name(self) -> str:
-        return "open_interest_market_cap"
+        return "open_interest_market_cap_feed"
 
     def _parse_interval_to_seconds(self, interval: IntervalType) -> float:
         if interval == "1m":
@@ -70,7 +74,18 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             return 86400
 
     def get_next_update_timestamp(self) -> float:
-        """Calculate the next update timestamp based on the interval."""
+        """
+        Calculate the next update timestamp based on the configured interval.
+
+        Example:
+            If current time is 2024-01-01 14:35:00 and interval is "1h":
+            - The last interval started at 14:00:00
+            - The next interval will start at 15:00:00
+
+            If current time is 2024-01-01 14:35:00 and interval is "15m":
+            - The last interval started at 14:30:00
+            - The next interval will start at 14:45:00
+        """
         now = datetime.fromtimestamp(time.time(), tz=timezone.utc)
         now_timestamp = int(now.timestamp())
         interval_seconds = self.update_interval
@@ -95,7 +110,6 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
     async def _fetch_loop(self):
         while True:
             try:
-                # Calculate time until next update
                 next_update_time = self._get_next_update_timestamp()
                 current_time = time.time()
                 sleep_time = max(0, next_update_time - current_time)
@@ -109,7 +123,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.logger().error(f"Unexpected error in {self.name} data feed: {e}", exc_info=True)
+                self.logger().error(f"Unexpected error at fetch loop from {self.name}: {e}", exc_info=True)
                 await asyncio.sleep(1)
 
     async def _fetch_data(self) -> bool:
@@ -117,36 +131,49 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             open_interest_task = self._open_interest_provider.fetch_open_interest()
             token_supply_task = self._token_supply_provider.fetch_token_supply()
             fallback_token_supply_task = self._fallback_token_supply_provider.fetch_token_supply()
-
             oi_result, ts_result, fallback_ts_result = await asyncio.gather(
                 open_interest_task, token_supply_task, fallback_token_supply_task
             )
 
-            if oi_result is not None:
-                self._latest_open_interest = oi_result
+            # update OI and catch corner case
+            if oi_result is not None and oi_result.open_interest == 0.0:
+                self.logger().warning(
+                    f"Open interest fetched from {self._open_interest_provider.__class__.__name__} for {self._config.trading_pair} is 0., skip updating."
+                )
+            elif oi_result is not None:
+                self._last_open_interest = oi_result
 
-            if ts_result is not None:
-                self._latest_token_supply = ts_result
+            # update token supply and catch corner case
+            if ts_result is not None and ts_result.total_supply == 0.0:
+                self.logger().warning(
+                    f"Token supply fetched from {self._token_supply_provider.__class__.__name__} for {self._config.trading_pair} is 0., skip updating."
+                )
+            elif ts_result is not None:
+                self._last_token_supply = ts_result
+
+            if fallback_ts_result is not None and fallback_ts_result.total_supply == 0.0:
+                self.logger().warning(
+                    f"Token supply fetched from {self._fallback_token_supply_provider.__class__.__name__} for {self._config.trading_pair} is 0., skip updating."
+                )
             elif fallback_ts_result is not None:
-                self._latest_token_supply = fallback_ts_result
+                self._last_fallback_token_supply = fallback_ts_result
 
-            return oi_result is not None and (ts_result is not None or fallback_ts_result is not None)
+            return oi_result is not None and ts_result is not None and fallback_ts_result is not None
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            self.logger().error(f"Error fetching data: {e}", exc_info=True)
+            self.logger().error(f"Error fetching open interest and token supply data: {e}", exc_info=True)
             return False
 
     def get_open_interest_to_market_cap_ratio(self, price: float) -> Optional[float]:
-        if (
-            not self._latest_open_interest
-            or not self._latest_token_supply
-            or not self._latest_token_supply.total_supply
-        ):
+        if not self.ready:
+            self.logger().warning(
+                f"Data feed for {self._config.trading_pair} is not ready, returning None on OI/MCap ratio."
+            )
             return None
 
-        market_cap = self._latest_token_supply.total_supply * price
+        market_cap = self._last_token_supply.total_supply * price
         if market_cap == 0:
             return None
 
-        return self._latest_open_interest.open_interest / market_cap
+        return self._last_open_interest.open_interest / market_cap
