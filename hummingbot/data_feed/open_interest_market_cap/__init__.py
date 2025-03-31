@@ -1,4 +1,4 @@
-from hummingbot.data_feed.open_interest_market_cap.data_types import OpenInterestMarketCapConfig
-from hummingbot.data_feed.open_interest_market_cap.open_interest_market_cap_feed import OpenInterestMarketCapFeed
+from .data_types import OpenInterestMarketCapConfig
+from .open_interest_market_cap_feed import OpenInterestMarketCapFeed
 
 __all__ = ["OpenInterestMarketCapConfig", "OpenInterestMarketCapFeed"]

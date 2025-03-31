@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
+IntervalType = Literal["1m", "10m", "15m", "30m", "1h", "1d"]
 
 
 class OpenInterestData(BaseModel):
@@ -25,4 +27,4 @@ class TokenSupplyData(BaseModel):
 
 class OpenInterestMarketCapConfig(BaseModel):
     trading_pair: str
-    update_interval: float = Field(default=60.0)
+    interval: IntervalType
