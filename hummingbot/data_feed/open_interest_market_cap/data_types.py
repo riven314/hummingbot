@@ -6,6 +6,11 @@ from pydantic import BaseModel
 IntervalType = Literal["1m", "10m", "15m", "30m", "1h", "1d"]
 
 
+class OpenInterestMarketCapConfig(BaseModel):
+    trading_pair: str
+    interval: IntervalType
+
+
 class OpenInterestData(BaseModel):
     provider: str
     symbol: str
@@ -23,8 +28,3 @@ class TokenSupplyData(BaseModel):
     total_supply: Optional[float] = None
     market_cap: Optional[float] = None
     last_updated: Optional[datetime] = None
-
-
-class OpenInterestMarketCapConfig(BaseModel):
-    trading_pair: str
-    interval: IntervalType
