@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
@@ -39,6 +40,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
             endpoint = CONSTANTS.BINANCE_OPEN_INTEREST_ENDPOINT
             url = f"{CONSTANTS.BINANCE_FUTURES_BASE_URL}{endpoint}"
 
+            requested_at = datetime.now(timezone.utc)
             response: dict = await rest_assistant.execute_request(
                 url=url, params=params, throttler_limit_id=CONSTANTS.BINANCE_RATE_LIMIT_ID
             )  # type: ignore
@@ -48,6 +50,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                 symbol=response["symbol"],
                 open_interest=float(response["openInterest"]),
                 timestamp=response["time"],
+                requested_at=requested_at,
             )
         except Exception as e:
             self.logger().error(f"Error fetching open interest data from Binance: {e}", exc_info=True)

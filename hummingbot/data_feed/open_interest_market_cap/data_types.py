@@ -16,6 +16,7 @@ class OpenInterestData(BaseModel):
     symbol: str
     open_interest: float
     timestamp: int
+    requested_at: datetime
 
     @property
     def last_updated(self) -> datetime:
@@ -28,3 +29,4 @@ class TokenSupplyData(BaseModel):
     total_supply: Optional[float] = None
     market_cap: Optional[float] = None
     last_updated: Optional[datetime] = None
+    requested_at: datetime

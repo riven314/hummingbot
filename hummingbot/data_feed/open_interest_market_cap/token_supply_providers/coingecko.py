@@ -43,7 +43,9 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
             )
             return None
 
-    def _parse_token_supply_from_coingecko_response(self, raw_token_data: dict) -> Optional[TokenSupplyData]:
+    def _parse_token_supply_from_coingecko_response(
+        self, requested_at: datetime, raw_token_data: dict
+    ) -> Optional[TokenSupplyData]:
         try:
             total_supply = raw_token_data.get("total_supply")
             if total_supply is None:
@@ -65,6 +67,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
                 total_supply=float(total_supply) if total_supply is not None else None,
                 market_cap=float(market_cap) if market_cap is not None else None,
                 last_updated=last_updated,
+                requested_at=requested_at,
             )
         except Exception as e:
             self.logger().error(f"Error parsing token supply data from CoinGecko response: {e}", exc_info=True)
@@ -77,6 +80,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
                 "vs_currency": "usd",
                 "ids": self._token_id,
             }
+            requested_at = datetime.now(timezone.utc)
             response: list[dict] = await rest_assistant.execute_request(
                 url=self.markets_endpoint, params=params, throttler_limit_id=CONSTANTS.COINGECKO_RATE_LIMIT_ID
             )  # type: ignore
@@ -87,7 +91,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
                 )
                 return None
 
-            return self._parse_token_supply_from_coingecko_response(response[0])
+            return self._parse_token_supply_from_coingecko_response(requested_at, response[0])
 
         except Exception as e:
             self.logger().error(f"Error fetching token supply data from CoinGecko: {e}", exc_info=True)

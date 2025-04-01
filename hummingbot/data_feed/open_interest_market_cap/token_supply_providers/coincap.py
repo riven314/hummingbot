@@ -43,7 +43,9 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
             )
             return None
 
-    def _parse_token_supply_from_coincap_response(self, raw_response: dict) -> Optional[TokenSupplyData]:
+    def _parse_token_supply_from_coincap_response(
+        self, requested_at: datetime, raw_response: dict
+    ) -> Optional[TokenSupplyData]:
         try:
             raw_token_data = raw_response.get("data", {})
             supply = raw_token_data.get("supply")
@@ -66,6 +68,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
                 total_supply=float(supply) if supply is not None else None,
                 market_cap=float(market_cap) if market_cap is not None else None,
                 last_updated=last_updated,
+                requested_at=requested_at,
             )
         except Exception as e:
             self.logger().error(f"Error parsing token supply data from CoinCap response: {e}", exc_info=True)
@@ -74,6 +77,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
     async def fetch_token_supply(self) -> Optional[TokenSupplyData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
+            requested_at = datetime.now(timezone.utc)
             response: dict = await rest_assistant.execute_request(
                 url=self.assets_endpoint, throttler_limit_id=CONSTANTS.COINCAP_RATE_LIMIT_ID
             )  # type: ignore
@@ -84,7 +88,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
                 )
                 return None
 
-            return self._parse_token_supply_from_coincap_response(response)
+            return self._parse_token_supply_from_coincap_response(requested_at, response)
 
         except Exception as e:
             self.logger().error(f"Error fetching token supply data from CoinCap: {e}", exc_info=True)
