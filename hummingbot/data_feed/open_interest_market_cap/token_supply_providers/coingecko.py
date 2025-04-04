@@ -239,17 +239,17 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
         }
         delta = interval_map[interval]
 
-        aligned_time = self._get_aligned_time(now, interval)
+        aligned_datetime = self._get_interval_aligned_datetime(now, interval)
 
         timestamps = []
-        current_time = aligned_time
+        current_datetime = aligned_datetime
         for _ in range(count):
-            timestamps.append(int(current_time.timestamp() * 1000))
-            current_time -= delta
+            timestamps.append(int(current_datetime.timestamp() * 1000))
+            current_datetime -= delta
 
         return sorted(timestamps)
 
-    def _get_aligned_time(self, time: datetime, interval: IntervalType) -> datetime:
+    def _get_interval_aligned_datetime(self, time: datetime, interval: IntervalType) -> datetime:
         if interval == "1d":
             return time.replace(hour=0, minute=0, second=0, microsecond=0)
         elif interval == "1h":
@@ -286,7 +286,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
                 )
         return result
 
-    def _calculate_days_needed(self, interval_timestamps: list[int]) -> int:
+    def _calculate_days_needed_for_forward_fill(self, interval_timestamps: list[int]) -> int:
         oldest_timestamp_ms = min(interval_timestamps)
         oldest_date = datetime.fromtimestamp(oldest_timestamp_ms / 1000, tz=timezone.utc).date()
         today = datetime.now(timezone.utc).date()
@@ -299,15 +299,16 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
             return await self.fetch_historical_daily_token_supply(count)
 
         interval_timestamps = self._simulate_interval_timestamps(interval, count)
-        days_needed = self._calculate_days_needed(interval_timestamps)
+        days_needed = self._calculate_days_needed_for_forward_fill(interval_timestamps)
         daily_data = await self.fetch_historical_daily_token_supply(days_needed)
-        self.logger().info(
-            f"Fetched {days_needed} days of historical data to do forward filling for token {self._token_id}"
-        )
         if not daily_data:
             raise TokenSupplyProviderError(
                 f"{interval} days of historical data are not available for token {self._token_id}"
             )
 
+        self.logger().info(
+            f"Simulate {count} {interval} historical token supply data by forward filling "
+            f"based on {days_needed} days of historical data for token {self._token_id}"
+        )
         requested_at = datetime.now(timezone.utc)
         return self._forward_fill_data(interval_timestamps, daily_data, requested_at)
