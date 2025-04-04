@@ -10,9 +10,9 @@ from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.open_interest_market_cap.data_types import (
     IntervalType,
+    LiveTokenSupplyData,
     OpenInterestData,
     OpenInterestMarketCapConfig,
-    TokenSupplyData,
 )
 from hummingbot.data_feed.open_interest_market_cap.open_interest_providers import BinanceOpenInterestProvider
 from hummingbot.data_feed.open_interest_market_cap.token_supply_providers import (
@@ -45,8 +45,8 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         self._token_supply_provider = CoinGeckoTokenSupplyProvider(self.token_id)
         self._fallback_token_supply_provider = CoinCapTokenSupplyProvider(self.token_id)
         self._last_open_interest: Optional[OpenInterestData] = None
-        self._last_token_supply: Optional[TokenSupplyData] = None
-        self._last_fallback_token_supply: Optional[TokenSupplyData] = None
+        self._last_token_supply: Optional[LiveTokenSupplyData] = None
+        self._last_fallback_token_supply: Optional[LiveTokenSupplyData] = None
 
     @property
     def token_id(self) -> str:
@@ -136,8 +136,8 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
     async def _fetch_data(self) -> bool:
         try:
             open_interest_task = self._open_interest_provider.fetch_open_interest()
-            token_supply_task = self._token_supply_provider.fetch_token_supply()
-            fallback_token_supply_task = self._fallback_token_supply_provider.fetch_token_supply()
+            token_supply_task = self._token_supply_provider.fetch_live_token_supply()
+            fallback_token_supply_task = self._fallback_token_supply_provider.fetch_live_token_supply()
             oi_result, ts_result, fallback_ts_result = await asyncio.gather(
                 open_interest_task, token_supply_task, fallback_token_supply_task
             )

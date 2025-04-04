@@ -42,7 +42,10 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
 
             requested_at = datetime.now(timezone.utc)
             response: dict = await rest_assistant.execute_request(
-                url=url, params=params, throttler_limit_id=CONSTANTS.BINANCE_RATE_LIMIT_ID
+                url=url,
+                params=params,
+                throttler_limit_id=CONSTANTS.BINANCE_RATE_LIMIT_ID,
+                timeout=CONSTANTS.TIMEOUT,
             )  # type: ignore
 
             return OpenInterestData(

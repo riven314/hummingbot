@@ -1,5 +1,7 @@
 from hummingbot.core.api_throttler.data_types import RateLimit
 
+TIMEOUT = 5
+
 # Binance Constants
 BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 BINANCE_OPEN_INTEREST_ENDPOINT = "/fapi/v1/openInterest"

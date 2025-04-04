@@ -5,7 +5,11 @@ from typing import Optional
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.data_feed.open_interest_market_cap import constants as CONSTANTS
-from hummingbot.data_feed.open_interest_market_cap.data_types import TokenSupplyData
+from hummingbot.data_feed.open_interest_market_cap.data_types import (
+    HistoricalTokenSupplyData,
+    IntervalType,
+    LiveTokenSupplyData,
+)
 from hummingbot.data_feed.open_interest_market_cap.token_supply_providers.base import TokenSupplyProviderBase
 from hummingbot.logger import HummingbotLogger
 
@@ -45,7 +49,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
 
     def _parse_token_supply_from_coincap_response(
         self, requested_at: datetime, raw_response: dict
-    ) -> Optional[TokenSupplyData]:
+    ) -> Optional[LiveTokenSupplyData]:
         try:
             raw_token_data = raw_response.get("data", {})
             supply = raw_token_data.get("supply")
@@ -62,7 +66,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
 
             last_updated = self._parse_last_updated(raw_response.get("timestamp"))
 
-            return TokenSupplyData(
+            return LiveTokenSupplyData(
                 provider=self.__class__.__name__,
                 token_id=self._token_id,
                 total_supply=float(supply) if supply is not None else None,
@@ -74,12 +78,14 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
             self.logger().error(f"Error parsing token supply data from CoinCap response: {e}", exc_info=True)
             return None
 
-    async def fetch_token_supply(self) -> Optional[TokenSupplyData]:
+    async def fetch_live_token_supply(self) -> Optional[LiveTokenSupplyData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             requested_at = datetime.now(timezone.utc)
             response: dict = await rest_assistant.execute_request(
-                url=self.assets_endpoint, throttler_limit_id=CONSTANTS.COINCAP_RATE_LIMIT_ID
+                url=self.assets_endpoint,
+                throttler_limit_id=CONSTANTS.COINCAP_RATE_LIMIT_ID,
+                timeout=CONSTANTS.TIMEOUT,
             )  # type: ignore
 
             if not response:
@@ -91,5 +97,10 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
             return self._parse_token_supply_from_coincap_response(requested_at, response)
 
         except Exception as e:
-            self.logger().error(f"Error fetching token supply data from CoinCap: {e}", exc_info=True)
+            self.logger().error(f"Error fetching live token supply data from CoinCap: {e}", exc_info=True)
             return None
+
+    async def fetch_historical_token_supply(
+        self, interval: IntervalType, count: int
+    ) -> Optional[list[HistoricalTokenSupplyData]]:
+        raise NotImplementedError("CoinCap does not support historical token supply data")
