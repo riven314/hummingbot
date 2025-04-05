@@ -3,6 +3,7 @@ from hummingbot.core.api_throttler.data_types import RateLimit
 TIMEOUT = 5
 INTERVAL_TO_DURATION_MS = {
     "5m": 5 * 60 * 1000,
+    "10m": 10 * 60 * 1000,
     "15m": 15 * 60 * 1000,
     "30m": 30 * 60 * 1000,
     "1h": 60 * 60 * 1000,

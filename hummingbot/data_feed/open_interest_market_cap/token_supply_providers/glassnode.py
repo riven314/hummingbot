@@ -49,20 +49,6 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
             raise ValueError(f"Invalid token ID: {token_id}")
         return GLASSNODE_TOKEN_ID_MAP[token_id]
 
-    def _parse_token_supply_from_glassnode_response(
-        self, requested_at: datetime, data: list[dict]
-    ) -> Optional[LiveTokenSupplyData]:
-        if not data:
-            return None
-        latest_entry = data[-1]
-        return LiveTokenSupplyData(
-            provider=self.__class__.__name__,
-            token_id=self._token_id.lower(),
-            total_supply=float(latest_entry["v"]),
-            timestamp=latest_entry["t"] * 1000,
-            requested_at=requested_at,
-        )
-
     def _get_request_params(self, interval: str, since_timestamp: Optional[int] = None) -> dict:
         glassnode_interval = "24h" if interval == "1d" else interval
         params = {
@@ -86,8 +72,9 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
     async def fetch_live_token_supply(self) -> Optional[LiveTokenSupplyData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
-            since_timestamp = self._calculate_since_timestamp(interval="10m", count=None)
-            params = self._get_request_params(interval="10m", since_timestamp=since_timestamp)
+            highest_interval = "10m"
+            since_timestamp = self._calculate_since_timestamp(interval=highest_interval, count=None)
+            params = self._get_request_params(interval=highest_interval, since_timestamp=since_timestamp)
             requested_at = datetime.now(timezone.utc)
             response = await rest_assistant.execute_request(
                 url=self.supply_endpoint,
@@ -96,7 +83,19 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                 throttler_limit_id=CONSTANTS.GLASSNODE_RATE_LIMIT_ID,
                 timeout=CONSTANTS.TIMEOUT,
             )
-            return self._parse_token_supply_from_glassnode_response(requested_at, response)
+            if len(response) == 0:
+                self.logger().warning(f"No live token supply data retrieved for {self._token_id} at {requested_at}")
+                return None
+
+            latest_entry = response[-1]
+            timestamp = int(latest_entry["t"]) * 1000 + CONSTANTS.INTERVAL_TO_DURATION_MS[highest_interval]
+            return LiveTokenSupplyData(
+                provider=self.__class__.__name__,
+                token_id=self._token_id.lower(),
+                total_supply=float(latest_entry["v"]),
+                timestamp=timestamp,
+                requested_at=requested_at,
+            )
         except Exception as e:
             self.logger().error(f"Error fetching live token supply data from Glassnode: {e}", exc_info=True)
             return None
