@@ -71,7 +71,7 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
                 token_id=self._token_id,
                 total_supply=float(supply) if supply is not None else None,
                 market_cap=float(market_cap) if market_cap is not None else None,
-                last_updated=last_updated,
+                recorded_at=last_updated,
                 requested_at=requested_at,
             )
         except Exception as e:

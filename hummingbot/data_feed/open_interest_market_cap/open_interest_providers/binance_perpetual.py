@@ -5,7 +5,7 @@ from typing import Optional
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.data_feed.open_interest_market_cap import constants as CONSTANTS
-from hummingbot.data_feed.open_interest_market_cap.data_types import OpenInterestData
+from hummingbot.data_feed.open_interest_market_cap.data_types import LiveOpenInterestData
 from hummingbot.data_feed.open_interest_market_cap.open_interest_providers.base import OpenInterestProviderBase
 from hummingbot.logger import HummingbotLogger
 
@@ -32,7 +32,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
     #             self.logger().info("Closed Binance REST assistant")
     #         self._rest_assistant = None
 
-    async def fetch_open_interest(self) -> Optional[OpenInterestData]:
+    async def fetch_open_interest(self) -> Optional[LiveOpenInterestData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             params = {"symbol": self._trading_pair}
@@ -48,7 +48,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                 timeout=CONSTANTS.TIMEOUT,
             )  # type: ignore
 
-            return OpenInterestData(
+            return LiveOpenInterestData(
                 provider=self.__class__.__name__,
                 symbol=response["symbol"],
                 open_interest=float(response["openInterest"]),

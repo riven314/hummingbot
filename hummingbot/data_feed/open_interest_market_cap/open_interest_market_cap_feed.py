@@ -10,8 +10,8 @@ from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.open_interest_market_cap.data_types import (
     IntervalType,
+    LiveOpenInterestData,
     LiveTokenSupplyData,
-    OpenInterestData,
     OpenInterestMarketCapConfig,
 )
 from hummingbot.data_feed.open_interest_market_cap.open_interest_providers import BinanceOpenInterestProvider
@@ -44,7 +44,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         self._open_interest_provider = BinanceOpenInterestProvider(self._config.trading_pair)
         self._token_supply_provider = CoinGeckoTokenSupplyProvider(self.token_id)
         self._fallback_token_supply_provider = CoinCapTokenSupplyProvider(self.token_id)
-        self._last_open_interest: Optional[OpenInterestData] = None
+        self._last_open_interest: Optional[LiveOpenInterestData] = None
         self._last_token_supply: Optional[LiveTokenSupplyData] = None
         self._last_fallback_token_supply: Optional[LiveTokenSupplyData] = None
 

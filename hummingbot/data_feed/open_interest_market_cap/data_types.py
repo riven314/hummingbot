@@ -11,15 +11,16 @@ class OpenInterestMarketCapConfig(BaseModel):
     interval: IntervalType
 
 
-class OpenInterestData(BaseModel):
+class LiveOpenInterestData(BaseModel):
     provider: str
     symbol: str
     open_interest: float
+    # either opening time if live data is interval based, or last updated timestamp if live data
     timestamp: int
     requested_at: datetime
 
     @property
-    def last_updated(self) -> datetime:
+    def recorded_at(self) -> datetime:
         return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
 
 
@@ -28,7 +29,7 @@ class LiveTokenSupplyData(BaseModel):
     token_id: str
     total_supply: Optional[float] = None
     market_cap: Optional[float] = None
-    last_updated: Optional[datetime] = None
+    recorded_at: Optional[datetime] = None
     requested_at: datetime
 
 
@@ -38,6 +39,10 @@ class HistoricalTokenSupplyData(BaseModel):
     total_supply: float
     timestamp: int
     requested_at: datetime
+
+    @property
+    def recorded_at(self) -> datetime:
+        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
 
 
 class OpenInterestMarketCapRecord(BaseModel):

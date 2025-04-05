@@ -1,14 +1,14 @@
 import abc
 from typing import Optional
 
-from hummingbot.data_feed.open_interest_market_cap.data_types import OpenInterestData
+from hummingbot.data_feed.open_interest_market_cap.data_types import LiveOpenInterestData
 
 
 class OpenInterestProviderBase(abc.ABC):
     """Base class for providers of open interest data"""
 
     @abc.abstractmethod
-    async def fetch_open_interest(self) -> Optional[OpenInterestData]:
+    async def fetch_open_interest(self) -> Optional[LiveOpenInterestData]:
         """
         Fetches open interest for a specific trading pair
 
