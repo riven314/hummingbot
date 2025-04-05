@@ -135,7 +135,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
     async def _fetch_data(self) -> bool:
         try:
-            open_interest_task = self._open_interest_provider.fetch_open_interest()
+            open_interest_task = self._open_interest_provider.fetch_live_open_interest()
             token_supply_task = self._token_supply_provider.fetch_live_token_supply()
             fallback_token_supply_task = self._fallback_token_supply_provider.fetch_live_token_supply()
             oi_result, ts_result, fallback_ts_result = await asyncio.gather(

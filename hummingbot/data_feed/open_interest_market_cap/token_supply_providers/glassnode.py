@@ -63,14 +63,31 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
             requested_at=requested_at,
         )
 
+    def _get_request_params(self, interval: str, since_timestamp: Optional[int] = None) -> dict:
+        glassnode_interval = "24h" if interval == "1d" else interval
+        params = {
+            "a": self._token_id,
+            "i": glassnode_interval,
+            "f": "json",
+        }
+        if since_timestamp is not None:
+            params["s"] = since_timestamp
+        return params
+
+    def _calculate_since_timestamp(self, interval: IntervalType, count: Optional[int] = None) -> int:
+        now = int(datetime.now(timezone.utc).timestamp())
+        if count is None:
+            interval_seconds = int(CONSTANTS.INTERVAL_TO_DURATION_MS["1h"] / 1000)
+            return now - interval_seconds
+        interval_seconds = int(CONSTANTS.INTERVAL_TO_DURATION_MS[interval] / 1000)
+        buffer_multiplier = 1.05
+        return now - int(interval_seconds * count * buffer_multiplier)
+
     async def fetch_live_token_supply(self) -> Optional[LiveTokenSupplyData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
-            params = {
-                "a": self._token_id,
-                "i": "10m",
-                "f": "json",
-            }
+            since_timestamp = self._calculate_since_timestamp(interval="10m", count=None)
+            params = self._get_request_params(interval="10m", since_timestamp=since_timestamp)
             requested_at = datetime.now(timezone.utc)
             response = await rest_assistant.execute_request(
                 url=self.supply_endpoint,
@@ -88,14 +105,9 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
         self, interval: IntervalType, count: int
     ) -> Optional[list[HistoricalTokenSupplyData]]:
         try:
-            # glassnode API treats 1d as 24h in query params
-            glassnode_interval = "24h" if interval == "1d" else interval
             rest_assistant = await self._api_factory.get_rest_assistant()
-            params = {
-                "a": self._token_id,
-                "i": glassnode_interval,
-                "f": "json",
-            }
+            since_timestamp = self._calculate_since_timestamp(interval=interval, count=count)
+            params = self._get_request_params(interval=interval, since_timestamp=since_timestamp)
             requested_at = datetime.now(timezone.utc)
             response = await rest_assistant.execute_request(
                 url=self.supply_endpoint,
@@ -105,9 +117,9 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                 timeout=CONSTANTS.TIMEOUT,
             )
 
-            result = []
-            for entry in response[-count:]:
-                result.append(
+            results = []
+            for entry in response:
+                results.append(
                     HistoricalTokenSupplyData(
                         provider=self.__class__.__name__,
                         token_id=self._token_id.lower(),
@@ -116,7 +128,8 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                         requested_at=requested_at,
                     )
                 )
-            return result
+            results = sorted(results, key=lambda x: x.timestamp)
+            return results[-count:]
         except Exception as e:
             self.logger().error(f"Error fetching historical token supply data from Glassnode: {e}", exc_info=True)
             return None

@@ -52,7 +52,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
     #             self.logger().info("Closed Binance REST assistant")
     #         self._rest_assistant = None
 
-    async def fetch_open_interest(self) -> Optional[LiveOpenInterestData]:
+    async def fetch_live_open_interest(self) -> Optional[LiveOpenInterestData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             params = {"symbol": self._trading_pair}

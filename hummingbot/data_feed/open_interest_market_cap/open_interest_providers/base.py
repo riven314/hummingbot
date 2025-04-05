@@ -16,7 +16,7 @@ class OpenInterestProviderBase(abc.ABC):
     """Base class for providers of open interest data"""
 
     @abc.abstractmethod
-    async def fetch_open_interest(self) -> Optional[LiveOpenInterestData]:
+    async def fetch_live_open_interest(self) -> Optional[LiveOpenInterestData]:
         """
         Fetches open interest for a specific trading pair
 
