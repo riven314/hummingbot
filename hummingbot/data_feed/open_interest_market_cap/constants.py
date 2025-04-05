@@ -1,11 +1,25 @@
 from hummingbot.core.api_throttler.data_types import RateLimit
 
 TIMEOUT = 5
+INTERVAL_TO_DURATION_MS = {
+    "5m": 5 * 60 * 1000,
+    "15m": 15 * 60 * 1000,
+    "30m": 30 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "2h": 2 * 60 * 60 * 1000,
+    "4h": 4 * 60 * 60 * 1000,
+    "6h": 6 * 60 * 60 * 1000,
+    "12h": 12 * 60 * 60 * 1000,
+    "1d": 24 * 60 * 60 * 1000,
+}
 
 # Binance Constants
 BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 BINANCE_OPEN_INTEREST_ENDPOINT = "/fapi/v1/openInterest"
+BINANCE_HISTORICAL_OPEN_INTEREST_ENDPOINT = "/futures/data/openInterestHist"
 BINANCE_RATE_LIMIT_ID = "binance_open_interest_rate_limit"
+BINANCE_HISTORICAL_OI_INTERVALS = ["5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"]
+BINANCE_HISTORICAL_OI_COUNT_LIMIT = 500
 
 # CoinGecko Constants
 COINGECKO_BASE_URL = "https://api.coingecko.com/api/v3"

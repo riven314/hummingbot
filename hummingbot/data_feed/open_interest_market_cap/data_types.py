@@ -24,6 +24,10 @@ class LiveOpenInterestData(BaseModel):
         return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
 
 
+class HistoricalOpenInterestData(LiveOpenInterestData):
+    pass
+
+
 class LiveTokenSupplyData(BaseModel):
     provider: str
     token_id: str
