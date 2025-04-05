@@ -83,10 +83,8 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                 throttler_limit_id=CONSTANTS.GLASSNODE_RATE_LIMIT_ID,
                 timeout=CONSTANTS.TIMEOUT,
             )
-            if len(response) == 0:
-                self.logger().warning(f"No live token supply data retrieved for {self._token_id} at {requested_at}")
-                return None
 
+            self._validate_api_response(response)
             latest_entry = response[-1]
             timestamp = int(latest_entry["t"]) * 1000 + CONSTANTS.INTERVAL_TO_DURATION_MS[highest_interval]
             return LiveTokenSupplyData(
@@ -99,6 +97,28 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
         except Exception as e:
             self.logger().error(f"Error fetching live token supply data from Glassnode: {e}", exc_info=True)
             return None
+
+    def _validate_data_freshness(self, latest_timestamp: int, interval: IntervalType) -> None:
+        current_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        interval_ms = CONSTANTS.INTERVAL_TO_DURATION_MS[interval]
+        # timestamp is start time of the interval
+        expected_latest = (current_time // interval_ms - 1) * interval_ms
+        if latest_timestamp != expected_latest:
+            raise TokenSupplyProviderError(
+                f"Data not up-to-date. Expected data for {expected_latest}, got {latest_timestamp}"
+            )
+
+    def _validate_api_response(self, response: list[dict]) -> None:
+        if len(response) == 0:
+            raise TokenSupplyProviderError("No historical token supply data found")
+
+        for data_point in response:
+            required_fields = ["t", "v"]
+            missing_fields = [field for field in required_fields if field not in data_point]
+            if missing_fields:
+                raise TokenSupplyProviderError(f"Missing required fields: {missing_fields}")
+            if float(data_point.get("v", 0.0)) <= 0:
+                raise TokenSupplyProviderError(f"Invalid token supply value: {data_point}")
 
     async def fetch_historical_token_supply(
         self, interval: IntervalType, count: int
@@ -116,8 +136,13 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                 timeout=CONSTANTS.TIMEOUT,
             )
 
+            self._validate_api_response(response)
+            data = sorted(response, key=lambda x: x["t"])
+            latest_timestamp = int(data[-1]["t"] * 1000)
+            self._validate_data_freshness(latest_timestamp, interval)
+
             results = []
-            for entry in response:
+            for entry in data:
                 results.append(
                     HistoricalTokenSupplyData(
                         provider=self.__class__.__name__,
@@ -127,7 +152,6 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
                         requested_at=requested_at,
                     )
                 )
-            results = sorted(results, key=lambda x: x.timestamp)
             return results[-count:]
         except Exception as e:
             self.logger().error(f"Error fetching historical token supply data from Glassnode: {e}", exc_info=True)
