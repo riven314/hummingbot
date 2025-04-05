@@ -53,14 +53,15 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
     def market_chart_endpoint(self) -> str:
         return f"{CONSTANTS.COINGECKO_BASE_URL}/coins/{self._token_id}/market_chart"
 
-    def _parse_last_updated(self, last_updated_str: Optional[str]) -> Optional[datetime]:
-        if not last_updated_str:
+    def _parse_timestamp_from_iso_datetime(self, last_updated_str: Optional[str]) -> Optional[int]:
+        if last_updated_str is None:
             self.logger().warning(
                 f"Missing field 'last_updated' in CoinGecko response for token {self._token_id}, defaulting to None"
             )
             return None
         try:
-            return datetime.fromisoformat(last_updated_str.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(last_updated_str.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
         except Exception:
             self.logger().error(
                 f"Failed to parse last_updated field ({last_updated_str}) for token {self._token_id}, defaulting to None",
@@ -84,14 +85,14 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
                     f"Missing field 'market_cap' in CoinGecko response for token {self._token_id}, defaulting to None"
                 )
 
-            last_updated = self._parse_last_updated(raw_token_data.get("last_updated"))
+            timestamp = self._parse_timestamp_from_iso_datetime(raw_token_data.get("last_updated"))
 
             return LiveTokenSupplyData(
                 provider=self.__class__.__name__,
                 token_id=self._token_id,
                 total_supply=float(total_supply) if total_supply is not None else None,
                 market_cap=float(market_cap) if market_cap is not None else None,
-                recorded_at=last_updated,
+                timestamp=timestamp,
                 requested_at=requested_at,
             )
         except Exception as e:

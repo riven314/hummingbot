@@ -29,14 +29,21 @@ class LiveTokenSupplyData(BaseModel):
     token_id: str
     total_supply: Optional[float] = None
     market_cap: Optional[float] = None
-    recorded_at: Optional[datetime] = None
+    timestamp: Optional[int] = None
     requested_at: datetime
+
+    @property
+    def recorded_at(self) -> Optional[datetime]:
+        if self.timestamp is None:
+            return None
+        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
 
 
 class HistoricalTokenSupplyData(BaseModel):
     provider: str
     token_id: str
     total_supply: float
+    # start timestamp of interval
     timestamp: int
     requested_at: datetime
 
