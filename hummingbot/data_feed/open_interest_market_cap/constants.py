@@ -31,6 +31,16 @@ COINCAP_BASE_URL = "https://api.coincap.io/v2"
 COINCAP_ASSETS_ENDPOINT = "/assets"
 COINCAP_RATE_LIMIT_ID = "COINCAP_API"
 
+# Glassnode Constants
+GLASSNODE_BASE_URL = "https://api.glassnode.com/v1"
+GLASSNODE_SUPPLY_ENDPOINT = "/metrics/supply/current"
+GLASSNODE_RATE_LIMIT_ID = "glassnode_rate_limit"
+GLASSNODE_TOKEN_ID_MAP = {
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "solana": "SOL",
+}
+
 # Fallback for Token BTC token supply
 FALLBACK_TOKEN_SUPPLY: dict[str, float] = {
     "bitcoin": 19844328.0,
@@ -39,3 +49,4 @@ FALLBACK_TOKEN_SUPPLY: dict[str, float] = {
 BINANCE_RATE_LIMITS = [RateLimit(BINANCE_RATE_LIMIT_ID, limit=20, time_interval=60)]
 COINGECKO_RATE_LIMITS = [RateLimit(COINGECKO_RATE_LIMIT_ID, limit=10, time_interval=60)]
 COINCAP_RATE_LIMITS = [RateLimit(COINCAP_RATE_LIMIT_ID, limit=200, time_interval=60)]
+GLASSNODE_RATE_LIMITS = [RateLimit(GLASSNODE_RATE_LIMIT_ID, limit=20, time_interval=60)]
