@@ -76,7 +76,7 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
     async def fetch_live_token_supply(self) -> Optional[LiveTokenSupplyData]:
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
-            highest_interval = "10m"
+            highest_interval: IntervalType = "10m"
             since_timestamp = self._calculate_since_timestamp(interval=highest_interval, count=None)
             params = self._get_request_params(interval=highest_interval, since_timestamp=since_timestamp)
             requested_at = datetime.now(timezone.utc)
