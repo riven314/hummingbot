@@ -33,6 +33,10 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
         self._api_factory = WebAssistantsFactory(throttler=self._throttler)
 
     @property
+    def name(self) -> str:
+        return self.__class__.__name__
+
+    @property
     def live_oi_endpoint(self) -> str:
         endpoint = CONSTANTS.BINANCE_OPEN_INTEREST_ENDPOINT
         url = f"{CONSTANTS.BINANCE_FUTURES_BASE_URL}{endpoint}"
@@ -82,9 +86,9 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
         interval_ms = self._get_interval_duration_ms(interval)
         expected_latest = (current_time // interval_ms) * interval_ms
         if latest_timestamp != expected_latest:
-            raise OpenInterestProviderError(
-                f"Data not up-to-date. Expected data for {expected_latest}, got {latest_timestamp}"
-            )
+            expected_dt = datetime.fromtimestamp(expected_latest / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            actual_dt = datetime.fromtimestamp(latest_timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            raise OpenInterestProviderError(f"Data not up-to-date. Expected data for {expected_dt}, got {actual_dt}")
 
     def _validate_api_response(self, response: List[Dict[str, Any]]) -> None:
         if len(response) == 0:
@@ -135,6 +139,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
             interval_ms = self._get_interval_duration_ms(interval)
             result = []
             for item in data:
+                # API returns closing time as timestamp, convert it to opening time
                 closing_timestamp = item["timestamp"]
                 opening_timestamp = closing_timestamp - interval_ms
                 result.append(

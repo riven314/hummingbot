@@ -46,6 +46,10 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
         self._api_factory = WebAssistantsFactory(throttler=self._throttler)
 
     @property
+    def name(self) -> str:
+        return self.__class__.__name__
+
+    @property
     def markets_endpoint(self) -> str:
         return f"{CONSTANTS.COINGECKO_BASE_URL}{CONSTANTS.COINGECKO_MARKETS_ENDPOINT}"
 

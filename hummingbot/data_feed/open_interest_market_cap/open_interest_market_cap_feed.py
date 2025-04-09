@@ -1,7 +1,7 @@
 import asyncio
 import logging
-import time
 from abc import ABC
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -11,14 +11,13 @@ from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.open_interest_market_cap.data_types import (
     IntervalType,
-    LiveOpenInterestData,
-    LiveTokenSupplyData,
     OpenInterestMarketCapConfig,
+    OpenInterestMarketCapRecord,
 )
 from hummingbot.data_feed.open_interest_market_cap.open_interest_providers import BinanceOpenInterestProvider
 from hummingbot.data_feed.open_interest_market_cap.token_supply_providers import (
-    CoinCapTokenSupplyProvider,
     CoinGeckoTokenSupplyProvider,
+    GlassnodeTokenSupplyProvider,
 )
 from hummingbot.logger import HummingbotLogger
 
@@ -43,11 +42,9 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         self._config = config
         self._fetch_loop_task: Optional[asyncio.Task] = None
         self._open_interest_provider = BinanceOpenInterestProvider(self._config.trading_pair)
-        self._token_supply_provider = CoinGeckoTokenSupplyProvider(self.token_id)
-        self._fallback_token_supply_provider = CoinCapTokenSupplyProvider(self.token_id)
-        self._last_open_interest: Optional[LiveOpenInterestData] = None
-        self._last_token_supply: Optional[LiveTokenSupplyData] = None
-        self._last_fallback_token_supply: Optional[LiveTokenSupplyData] = None
+        self._coingecko_token_supply_provider = CoinGeckoTokenSupplyProvider(self.token_id)
+        self._glassnode_token_supply_provider = GlassnodeTokenSupplyProvider(self.token_id)
+        self._queue: deque[OpenInterestMarketCapRecord] = deque(maxlen=self._config.window)
 
     @property
     def token_id(self) -> str:
@@ -79,7 +76,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             - The last interval started at 14:30:00
             - The next interval will start at 14:45:00
         """
-        now = datetime.fromtimestamp(time.time(), tz=timezone.utc)
+        now = datetime.now(timezone.utc)
         now_timestamp = int(now.timestamp())
         interval_seconds = self.update_interval
 
@@ -100,22 +97,29 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         if self._fetch_loop_task is not None:
             self._fetch_loop_task.cancel()
             self._fetch_loop_task = None
+        self._queue.clear()
 
     async def check_network(self) -> NetworkStatus:
         return NetworkStatus.CONNECTED
 
     async def _fetch_loop(self):
+        if not self.ready:
+            await self._fetch_historical_data()
+            self._ready_event.set()
+
         while True:
             try:
-                success = await self._fetch_data()
-                if success:
-                    self._ready_event.set()
-
-                next_update_time = self.get_next_update_timestamp()
-                current_time = time.time()
-                sleep_time = max(0, next_update_time - current_time)
+                next_update_timestamp = self.get_next_update_timestamp()
+                current_timestamp = datetime.now(timezone.utc).timestamp()
+                sleep_time = max(0, next_update_timestamp - current_timestamp)
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
+
+                is_fetch_live_success = await self._fetch_live_data()
+                if not is_fetch_live_success:
+                    self.logger().warning(
+                        f"Failed to fetch live OI and Token Supplydata for {self._config.trading_pair}."
+                    )
 
             except asyncio.CancelledError:
                 raise
@@ -123,56 +127,92 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 self.logger().error(f"Unexpected error at fetch loop from {self.name}: {e}", exc_info=True)
                 await asyncio.sleep(1)
 
-    async def _fetch_data(self) -> bool:
-        try:
-            open_interest_task = self._open_interest_provider.fetch_live_open_interest()
-            token_supply_task = self._token_supply_provider.fetch_live_token_supply()
-            fallback_token_supply_task = self._fallback_token_supply_provider.fetch_live_token_supply()
-            oi_result, ts_result, fallback_ts_result = await asyncio.gather(
-                open_interest_task, token_supply_task, fallback_token_supply_task
+    async def _fetch_historical_data(self) -> None:
+        requested_at = datetime.now(timezone.utc)
+        historical_oi_task = self._open_interest_provider.fetch_historical_open_interest(
+            interval=self._config.interval, count=self._config.window
+        )
+        historical_fallback_ts_task = self._glassnode_token_supply_provider.fetch_historical_token_supply(
+            interval=self._config.interval, count=self._config.window
+        )
+        oi_results, ts_results = await asyncio.gather(historical_oi_task, historical_fallback_ts_task)
+
+        # check invalid historical data
+        if oi_results is None or ts_results is None or len(oi_results) != len(ts_results):
+            raise Exception(f"Failed to fetch historical OI and Token Supplydata for {self._config.trading_pair}.")
+
+        for oi, ts in zip(oi_results, ts_results):
+            # check timestamp mismatch
+            if oi.timestamp != ts.timestamp:
+                raise ValueError(f"Open interest and token supply timestamp mismatch: {oi.timestamp} != {ts.timestamp}")
+
+            self._queue.append(
+                OpenInterestMarketCapRecord(
+                    open_interest_provider=self._open_interest_provider.name,
+                    token_supply_provider=self._glassnode_token_supply_provider.name,
+                    symbol=self._config.trading_pair,
+                    open_interest=oi.open_interest,
+                    token_supply=ts.total_supply,
+                    timestamp=oi.timestamp,
+                    requested_at=requested_at,
+                )
             )
+        self.logger().info(
+            f"Successfully fetched {len(oi_results)} historical OI and Token Supplydata for {self._config.trading_pair}."
+        )
 
-            # update OI and catch corner case
-            if oi_result is None or oi_result.open_interest == 0.0:
-                self.logger().warning(
-                    f"Open interest fetched from {self._open_interest_provider.__class__.__name__} "
-                    f"for {self._config.trading_pair} is None or 0 ({oi_result}), skip updating."
-                )
-            else:
-                self._last_open_interest = oi_result
+    async def _fetch_live_data(self, timestamp: int) -> bool:
+        requested_at = datetime.now(timezone.utc)
+        open_interest_task = self._open_interest_provider.fetch_live_open_interest()
+        token_supply_task = self._coingecko_token_supply_provider.fetch_live_token_supply()
+        oi_result, ts_result = await asyncio.gather(open_interest_task, token_supply_task)
 
-            if ts_result is None or ts_result.total_supply == 0.0:
-                self.logger().warning(
-                    f"Token supply fetched from {self._token_supply_provider.__class__.__name__} "
-                    f"for {self._config.trading_pair} is None or 0 ({ts_result}), skip updating."
-                )
-            else:
-                self._last_token_supply = ts_result
+        is_oi_estimated, is_ts_estimated = False, False
 
-            if fallback_ts_result is None or fallback_ts_result.total_supply == 0.0:
-                self.logger().warning(
-                    f"Token supply fetched from {self._fallback_token_supply_provider.__class__.__name__} "
-                    f"for {self._config.trading_pair} is None or 0 ({fallback_ts_result}), skip updating."
-                )
-            else:
-                self._last_fallback_token_supply = fallback_ts_result
-
-            return oi_result is not None and (ts_result is not None or fallback_ts_result is not None)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            self.logger().error(f"Error fetching open interest and token supply data: {e}", exc_info=True)
-            return False
-
-    def get_open_interest_to_market_cap_ratio(self, price: float) -> Optional[float]:
-        if not self.ready:
+        # handle API request failure, and fallback to Glassnode
+        if ts_result is None or ts_result.total_supply == 0.0:
             self.logger().warning(
-                f"Data feed for {self._config.trading_pair} is not ready, returning None on OI/MCap ratio."
+                f"Live token supply fetched from {self._coingecko_token_supply_provider.name} "
+                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to Glassnode."
             )
-            return None
+            ts_result = await self._glassnode_token_supply_provider.fetch_live_token_supply()
 
-        market_cap = self._last_token_supply.total_supply * price
-        if market_cap == 0:
-            return None
+        # handle None or problematic returning data
+        if ts_result is None or ts_result.total_supply is None or ts_result.total_supply == 0.0:
+            last_token_supply = self._queue[-1].token_supply
+            token_supply = last_token_supply
+            is_ts_estimated = True
+            self.logger().warning(
+                f"Live token supply fetched from {self._coingecko_token_supply_provider.name} "
+                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to previous record ({last_token_supply})"
+            )
+        else:
+            token_supply = ts_result.total_supply
 
-        return self._last_open_interest.open_interest / market_cap
+        if oi_result is None or oi_result.open_interest is None or oi_result.open_interest == 0.0:
+            last_open_interest = self._queue[-1].open_interest
+            open_interest = last_open_interest
+            is_oi_estimated = True
+            self.logger().warning(
+                f"Live open interest fetched from {self._open_interest_provider.name} "
+                f"for {self._config.trading_pair} is None or 0 ({oi_result}), fallback to previous record ({last_open_interest})"
+            )
+        else:
+            open_interest = oi_result.open_interest
+
+        open_timestamp = int(timestamp - self.update_interval)
+        if oi_result and ts_result:
+            self._queue.append(
+                OpenInterestMarketCapRecord(
+                    open_interest_provider=self._open_interest_provider.name,
+                    token_supply_provider=self._coingecko_token_supply_provider.name,
+                    symbol=self._config.trading_pair,
+                    open_interest=open_interest,
+                    token_supply=token_supply,
+                    timestamp=open_timestamp,
+                    requested_at=requested_at,
+                    is_open_interest_estimated=is_oi_estimated,
+                    is_token_supply_estimated=is_ts_estimated,
+                )
+            )
+        return True

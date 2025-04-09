@@ -41,6 +41,7 @@ GLASSNODE_TOKEN_ID_MAP = {
     "ethereum": "ETH",
     "solana": "SOL",
 }
+GLASSNODE_HISTORICAL_OI_INTERVALS = ["10m", "1h", "1d"]
 
 # Fallback for Token BTC token supply
 FALLBACK_TOKEN_SUPPLY: dict[str, float] = {

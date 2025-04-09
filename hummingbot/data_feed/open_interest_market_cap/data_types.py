@@ -3,12 +3,13 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
-IntervalType = Literal["1m", "10m", "15m", "30m", "1h", "1d"]
+IntervalType = Literal["1m", "5m", "10m", "15m", "30m", "1h", "1d"]
 
 
 class OpenInterestMarketCapConfig(BaseModel):
     trading_pair: str
     interval: IntervalType
+    window: int
 
 
 class LiveOpenInterestData(BaseModel):
@@ -70,3 +71,8 @@ class OpenInterestMarketCapRecord(BaseModel):
     # 1. whether token supply is forward filled because of missing/ problematic value
     # 2. whether tokens supply is estimated based on interpolation (e.g. use daily CoinGecko data to interlate hourly data)
     is_token_supply_estimated: bool = False
+
+    # no need to use price because it cancels out on denominator and numerator
+    @property
+    def oi_mcap_ratio(self) -> float:
+        return self.open_interest / self.token_supply

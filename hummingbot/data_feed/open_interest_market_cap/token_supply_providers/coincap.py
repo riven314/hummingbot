@@ -29,6 +29,10 @@ class CoinCapTokenSupplyProvider(TokenSupplyProviderBase):
         self._api_factory = WebAssistantsFactory(throttler=self._throttler)
 
     @property
+    def name(self) -> str:
+        return self.__class__.__name__
+
+    @property
     def assets_endpoint(self) -> str:
         return f"{CONSTANTS.COINCAP_BASE_URL}{CONSTANTS.COINCAP_ASSETS_ENDPOINT}/{self._token_id}"
 

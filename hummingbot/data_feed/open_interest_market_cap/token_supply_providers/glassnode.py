@@ -37,6 +37,10 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
         self._api_factory = WebAssistantsFactory(throttler=self._throttler)
 
     @property
+    def name(self) -> str:
+        return self.__class__.__name__
+
+    @property
     def supply_endpoint(self) -> str:
         return f"{CONSTANTS.GLASSNODE_BASE_URL}{CONSTANTS.GLASSNODE_SUPPLY_ENDPOINT}"
 
@@ -104,9 +108,9 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
         # timestamp is start time of the interval
         expected_latest = (current_time // interval_ms - 1) * interval_ms
         if latest_timestamp != expected_latest:
-            raise TokenSupplyProviderError(
-                f"Data not up-to-date. Expected data for {expected_latest}, got {latest_timestamp}"
-            )
+            expected_dt = datetime.fromtimestamp(expected_latest / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            actual_dt = datetime.fromtimestamp(latest_timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            raise TokenSupplyProviderError(f"Data not up-to-date. Expected data for {expected_dt}, got {actual_dt}")
 
     def _validate_api_response(self, response: list[dict]) -> None:
         if len(response) == 0:
@@ -123,6 +127,12 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
     async def fetch_historical_token_supply(
         self, interval: IntervalType, count: int
     ) -> Optional[list[HistoricalTokenSupplyData]]:
+        if interval not in CONSTANTS.GLASSNODE_HISTORICAL_OI_INTERVALS:
+            supported = ", ".join(CONSTANTS.GLASSNODE_HISTORICAL_OI_INTERVALS)
+            raise TokenSupplyProviderError(
+                f"Glaanode unsupported interval: {interval}. Supported intervals: {supported}"
+            )
+
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             since_timestamp = self._calculate_since_timestamp(interval=interval, count=count)
