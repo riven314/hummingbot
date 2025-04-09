@@ -22,11 +22,9 @@ from hummingbot.data_feed.open_interest_market_cap.token_supply_providers import
 from hummingbot.logger import HummingbotLogger
 
 
-# TODO: add retry on each provider
-# TODO: handle OpenInterestData or TokenSupplyData has None value on critical fields
-# TODO: check and handle obsolete data at get_open_interest_to_market_cap_ratio
-# TODO: tg notification on API error at each providers (e.g. API upgrade for coincap) ==> random error
-# OSError: Error executing request GET https://api.coincap.io/v2/assets/bitcoin. HTTP status is 429. Error: {"data":{"message":"We are deprecating this version of the CoinCap API on March 31, 2025. Sign up for our new V3 API at https://pro.coincap.io/dashboard"},"timestamp":1743435300643}
+# TODO: handle the case when update interval (e.g. 10m) is higher resolution than trading interval (e.g. 1h)
+# TODO: better fallback when live data request is failing (fallback to previous snapshot, and add retry)
+# TODO: OpenInterestMarketCapRecord should include field to indicate the data actual timestamp (e.g. last_updated)
 class OpenInterestMarketCapFeed(DataFeedBase, ABC):
     oi_mcap_logger: Optional[HummingbotLogger] = None
     _oi_mcap_shared_instance: Optional["OpenInterestMarketCapFeed"] = None
