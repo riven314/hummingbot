@@ -5,6 +5,7 @@ from abc import ABC
 from datetime import datetime, timezone
 from typing import Optional
 
+import hummingbot.data_feed.open_interest_market_cap.constants as CONSTANTS
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
@@ -63,18 +64,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         return f"{self.__class__.__name__}:{self._config.trading_pair}:{self._config.interval}"
 
     def _parse_interval_to_seconds(self, interval: IntervalType) -> float:
-        if interval == "1m":
-            return 60
-        elif interval == "10m":
-            return 600
-        elif interval == "15m":
-            return 900
-        elif interval == "30m":
-            return 1800
-        elif interval == "1h":
-            return 3600
-        elif interval == "1d":
-            return 86400
+        return CONSTANTS.INTERVAL_TO_DURATION_MS[interval] / 1000
 
     def get_next_update_timestamp(self) -> float:
         """
