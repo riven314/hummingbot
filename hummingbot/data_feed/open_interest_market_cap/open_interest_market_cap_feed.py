@@ -63,7 +63,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
     def get_next_update_timestamp(self) -> float:
         """
-        Calculate the next update timestamp based on the configured interval.
+        Calculate the next update timestamp based on the configured interval, in milliseconds.
 
         Example:
             If current time is 2024-01-01 14:35:00 and interval is "1h":
@@ -80,11 +80,11 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
         if self._config.interval == "1d":
             next_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp() + interval_seconds
-            return next_day
+            return next_day * 1000
 
         intervals_passed = now_timestamp // interval_seconds
         next_interval_timestamp = (intervals_passed + 1) * interval_seconds
-        return next_interval_timestamp
+        return next_interval_timestamp * 1000
 
     async def start_network(self):
         await self.stop_network()
@@ -108,7 +108,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         while True:
             try:
                 next_update_timestamp = self.get_next_update_timestamp()
-                current_timestamp = datetime.now(timezone.utc).timestamp()
+                current_timestamp = datetime.now(timezone.utc).timestamp() * 1000
                 sleep_time = max(0, next_update_timestamp - current_timestamp)
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
@@ -213,4 +213,6 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                     is_token_supply_estimated=is_ts_estimated,
                 )
             )
+        else:
+            raise NotImplementedError
         return True
