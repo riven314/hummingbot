@@ -176,43 +176,39 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             ts_result = await self._glassnode_token_supply_provider.fetch_live_token_supply()
 
         # handle None or problematic returning data
+        last_record = self._queue[-1]
         if ts_result is None or ts_result.total_supply is None or ts_result.total_supply == 0.0:
-            last_token_supply = self._queue[-1].token_supply
-            token_supply = last_token_supply
+            token_supply = last_record.token_supply
             is_ts_estimated = True
             self.logger().warning(
                 f"Live token supply fetched from {self._coingecko_token_supply_provider.name} "
-                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to previous record ({last_token_supply})"
+                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to previous record ({last_record.token_supply})"
             )
         else:
             token_supply = ts_result.total_supply
 
         if oi_result is None or oi_result.open_interest is None or oi_result.open_interest == 0.0:
-            last_open_interest = self._queue[-1].open_interest
-            open_interest = last_open_interest
+            open_interest = last_record.open_interest
             is_oi_estimated = True
             self.logger().warning(
                 f"Live open interest fetched from {self._open_interest_provider.name} "
-                f"for {self._config.trading_pair} is None or 0 ({oi_result}), fallback to previous record ({last_open_interest})"
+                f"for {self._config.trading_pair} is None or 0 ({oi_result}), fallback to previous record ({last_record.open_interest})"
             )
         else:
             open_interest = oi_result.open_interest
 
         open_timestamp = int(timestamp - self.update_interval * 1000)
-        if oi_result and ts_result:
-            self._queue.append(
-                OpenInterestMarketCapRecord(
-                    open_interest_provider=self._open_interest_provider.name,
-                    token_supply_provider=self._coingecko_token_supply_provider.name,
-                    symbol=self._config.trading_pair,
-                    open_interest=open_interest,
-                    token_supply=token_supply,
-                    timestamp=open_timestamp,
-                    requested_at=requested_at,
-                    is_open_interest_estimated=is_oi_estimated,
-                    is_token_supply_estimated=is_ts_estimated,
-                )
+        self._queue.append(
+            OpenInterestMarketCapRecord(
+                open_interest_provider=self._open_interest_provider.name,
+                token_supply_provider=self._coingecko_token_supply_provider.name,
+                symbol=self._config.trading_pair,
+                open_interest=open_interest,
+                token_supply=token_supply,
+                timestamp=open_timestamp,
+                requested_at=requested_at,
+                is_open_interest_estimated=is_oi_estimated,
+                is_token_supply_estimated=is_ts_estimated,
             )
-        else:
-            raise NotImplementedError
+        )
         return True
