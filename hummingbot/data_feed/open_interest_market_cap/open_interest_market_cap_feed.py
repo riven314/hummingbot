@@ -198,7 +198,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         else:
             open_interest = oi_result.open_interest
 
-        open_timestamp = int(timestamp - self.update_interval)
+        open_timestamp = int(timestamp - self.update_interval * 1000)
         if oi_result and ts_result:
             self._queue.append(
                 OpenInterestMarketCapRecord(

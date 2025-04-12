@@ -90,7 +90,7 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
 
             self._validate_api_response(response)
             latest_entry = response[-1]
-            timestamp = int(latest_entry["t"]) * 1000 + CONSTANTS.INTERVAL_TO_DURATION_MS[highest_interval]
+            timestamp = int(int(latest_entry["t"]) * 1000 + CONSTANTS.INTERVAL_TO_DURATION_MS[highest_interval])
             return LiveTokenSupplyData(
                 provider=self.__class__.__name__,
                 token_id=self._token_id.lower(),
