@@ -107,17 +107,13 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
         while True:
             try:
-                next_update_timestamp = self.get_next_update_timestamp()
-                current_timestamp = datetime.now(timezone.utc).timestamp() * 1000
-                sleep_time = max(0, next_update_timestamp - current_timestamp)
+                next_update_timestamp_ms = self.get_next_update_timestamp()
+                current_timestamp_s = datetime.now(timezone.utc).timestamp()
+                sleep_time = max(0, next_update_timestamp_ms / 1000 - current_timestamp_s)
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
-                is_fetch_live_success = await self._fetch_live_data(timestamp=next_update_timestamp)
-                if not is_fetch_live_success:
-                    self.logger().warning(
-                        f"Failed to fetch live OI and Token Supplydata for {self._config.trading_pair}."
-                    )
+                await self._fetch_live_data(timestamp_ms=next_update_timestamp_ms)
 
             except asyncio.CancelledError:
                 raise
@@ -153,13 +149,15 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                     token_supply=ts.total_supply,
                     timestamp=oi.timestamp,
                     requested_at=requested_at,
+                    is_open_interest_estimated=oi.is_estimated,
+                    is_token_supply_estimated=ts.is_estimated,
                 )
             )
         self.logger().info(
             f"Successfully fetched {len(oi_results)} historical OI and Token Supplydata for {self._config.trading_pair}."
         )
 
-    async def _fetch_live_data(self, timestamp: int) -> bool:
+    async def _fetch_live_data(self, timestamp_ms: int):
         requested_at = datetime.now(timezone.utc)
         open_interest_task = self._open_interest_provider.fetch_live_open_interest()
         token_supply_task = self._coingecko_token_supply_provider.fetch_live_token_supply()
@@ -175,7 +173,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             )
             ts_result = await self._glassnode_token_supply_provider.fetch_live_token_supply()
 
-        # handle None or problematic returning data
+        # handle None or problematic returning data and fallback to previous record
         last_record = self._queue[-1]
         if ts_result is None or ts_result.total_supply is None or ts_result.total_supply == 0.0:
             token_supply = last_record.token_supply
@@ -197,7 +195,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         else:
             open_interest = oi_result.open_interest
 
-        open_timestamp = int(timestamp - self.update_interval * 1000)
+        open_timestamp_ms = int(timestamp_ms - self.update_interval * 1000)
         self._queue.append(
             OpenInterestMarketCapRecord(
                 open_interest_provider=self._open_interest_provider.name,
@@ -205,10 +203,9 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 symbol=self._config.trading_pair,
                 open_interest=open_interest,
                 token_supply=token_supply,
-                timestamp=open_timestamp,
+                timestamp=open_timestamp_ms,
                 requested_at=requested_at,
                 is_open_interest_estimated=is_oi_estimated,
                 is_token_supply_estimated=is_ts_estimated,
             )
         )
-        return True

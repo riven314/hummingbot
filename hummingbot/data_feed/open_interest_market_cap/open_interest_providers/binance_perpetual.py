@@ -109,6 +109,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
         interval_ms = self._get_interval_duration_ms(interval)
         return timestamp % interval_ms == 0
 
+    # I saw missing data from binance historical OI endpoint before
     def _check_and_fill_missing_data(
         self, data: List[HistoricalOpenInterestData], interval: IntervalType
     ) -> List[HistoricalOpenInterestData]:
@@ -134,7 +135,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                 last_valid_entry = existing_data[current_ts]
             else:
                 self.logger().warning(
-                    f"Missing open interest data at timestamp: {current_ts}, forward fill by last valid entry"
+                    f"Missing historical open interest data at timestamp: {current_ts}, forward fill by last valid entry"
                 )
                 filled_entry = HistoricalOpenInterestData(
                     provider=last_valid_entry.provider,
@@ -142,6 +143,7 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                     open_interest=last_valid_entry.open_interest,
                     timestamp=current_ts,
                     requested_at=last_valid_entry.requested_at,
+                    is_estimated=True,
                 )
                 result.append(filled_entry)
             current_ts += interval_ms
