@@ -105,21 +105,77 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
     def _get_interval_duration_ms(self, interval: IntervalType) -> int:
         return CONSTANTS.INTERVAL_TO_DURATION_MS[interval]
 
+    def _is_belong_to_interval(self, timestamp: int, interval: IntervalType) -> bool:
+        interval_ms = self._get_interval_duration_ms(interval)
+        return timestamp % interval_ms == 0
+
+    def _check_and_fill_missing_data(
+        self, data: List[HistoricalOpenInterestData], interval: IntervalType
+    ) -> List[HistoricalOpenInterestData]:
+        if len(data) <= 1:
+            raise OpenInterestProviderError("At least 2 data points are required for data validation and filling")
+
+        interval_ms = self._get_interval_duration_ms(interval)
+        start_ts = data[0].timestamp
+        end_ts = data[-1].timestamp
+
+        # Create lookup dictionary for existing data
+        existing_data = {entry.timestamp: entry for entry in data}
+
+        # Initialize result list and tracking variables
+        result = []
+        last_valid_entry = data[0]
+
+        # Generate all expected timestamps and fill missing data
+        current_ts = start_ts
+        while current_ts <= end_ts:
+            if current_ts in existing_data:
+                result.append(existing_data[current_ts])
+                last_valid_entry = existing_data[current_ts]
+            else:
+                self.logger().warning(
+                    f"Missing open interest data at timestamp: {current_ts}, forward fill by last valid entry"
+                )
+                filled_entry = HistoricalOpenInterestData(
+                    provider=last_valid_entry.provider,
+                    symbol=last_valid_entry.symbol,
+                    open_interest=last_valid_entry.open_interest,
+                    timestamp=current_ts,
+                    requested_at=last_valid_entry.requested_at,
+                )
+                result.append(filled_entry)
+            current_ts += interval_ms
+
+        return result
+
     async def fetch_historical_open_interest(
         self, interval: IntervalType, count: int
     ) -> Optional[List[HistoricalOpenInterestData]]:
-        if interval not in CONSTANTS.BINANCE_HISTORICAL_OI_INTERVALS:
+        # special case for 10m interval, we can use 5m to construct
+        if interval == "10m":
+            request_interval = "5m"
+            request_count = count * 2 + 2
+            self.logger().warning(
+                f"Using 5m interval (count: {request_count}) to fetch 10m (count: {count}) historical OI data for {self._trading_pair}"
+            )
+        elif interval not in CONSTANTS.BINANCE_HISTORICAL_OI_INTERVALS:
             supported = ", ".join(CONSTANTS.BINANCE_HISTORICAL_OI_INTERVALS)
             raise ValueError(f"Unsupported interval: {interval}. Supported intervals: {supported}")
-        if count > CONSTANTS.BINANCE_HISTORICAL_OI_COUNT_LIMIT:
-            raise ValueError("Binance only supports a max of 500 historical open interest data points")
+        else:
+            request_interval = interval
+            request_count = count
+
+        if request_count > CONSTANTS.BINANCE_HISTORICAL_OI_COUNT_LIMIT:
+            raise ValueError(
+                f"Binance only supports a max of 500 historical open interest data points (request count: {request_count})"
+            )
 
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             params = {
                 "symbol": self._trading_pair,
-                "period": interval,
-                "limit": count,
+                "period": request_interval,
+                "limit": request_count,
             }
 
             requested_at = datetime.now(timezone.utc)
@@ -130,16 +186,17 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                 timeout=CONSTANTS.TIMEOUT,
             )  # type: ignore
 
-            # data validation
+            # validation pre-transformation
             self._validate_api_response(response)
             data = sorted(response, key=lambda x: x["timestamp"])
-            self._validate_data_freshness(data[-1]["timestamp"], interval)
 
             # data transform
             interval_ms = self._get_interval_duration_ms(interval)
             result = []
             for item in data:
                 # API returns closing time as timestamp, convert it to opening time
+                if not self._is_belong_to_interval(item["timestamp"], interval):
+                    continue
                 closing_timestamp = item["timestamp"]
                 opening_timestamp = closing_timestamp - interval_ms
                 result.append(
@@ -151,6 +208,12 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                         requested_at=requested_at,
                     )
                 )
+
+            # validation post transformation
+            latest_close_timestamp = result[-1].timestamp + interval_ms
+            self._validate_data_freshness(latest_close_timestamp, interval)
+            result = self._check_and_fill_missing_data(result, interval)
+            result = result[-count:]
             return result
         except Exception as e:
             self.logger().error(f"Error fetching historical open interest data from Binance: {e}", exc_info=True)

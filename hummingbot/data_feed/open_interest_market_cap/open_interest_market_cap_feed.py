@@ -113,7 +113,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
-                is_fetch_live_success = await self._fetch_live_data()
+                is_fetch_live_success = await self._fetch_live_data(timestamp=next_update_timestamp)
                 if not is_fetch_live_success:
                     self.logger().warning(
                         f"Failed to fetch live OI and Token Supplydata for {self._config.trading_pair}."
