@@ -142,6 +142,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                     requested_at=requested_at,
                 )
             )
+        self._queue[-1].zscore = self.get_last_zscore()
         self.logger().info(
             f"Successfully fetched {len(oi_results)} historical OI and Token Supplydata for {self._config.trading_pair}."
         )
