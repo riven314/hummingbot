@@ -16,6 +16,8 @@ from hummingbot.data_feed.open_interest_market_cap.token_supply_providers.base i
     TokenSupplyProviderBase,
     TokenSupplyProviderError,
 )
+from hummingbot.data_feed.open_interest_market_cap.utils.interval_utils import IntervalUtility
+from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 from hummingbot.logger import HummingbotLogger
 
 
@@ -65,11 +67,11 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
         return params
 
     def _calculate_since_timestamp(self, interval: IntervalType, count: Optional[int] = None) -> int:
-        now = int(datetime.now(timezone.utc).timestamp())
+        now = int(TimeUtility.now_ms() / 1000)  # Convert to seconds for Glassnode API
         if count is None:
-            interval_seconds = int(CONSTANTS.INTERVAL_TO_DURATION_MS["1h"] / 1000)
+            interval_seconds = int(IntervalUtility.get_duration_ms("1h") / 1000)
             return now - interval_seconds
-        interval_seconds = int(CONSTANTS.INTERVAL_TO_DURATION_MS[interval] / 1000)
+        interval_seconds = int(IntervalUtility.get_duration_ms(interval) / 1000)
         buffer_multiplier = 1.05
         return now - int(interval_seconds * count * buffer_multiplier)
 
@@ -90,7 +92,7 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
 
             self._validate_api_response(response)
             latest_entry = response[-1]
-            timestamp = int(int(latest_entry["t"]) * 1000 + CONSTANTS.INTERVAL_TO_DURATION_MS[highest_interval])
+            timestamp = int(int(latest_entry["t"]) * 1000 + IntervalUtility.get_duration_ms(highest_interval))
             return LiveTokenSupplyData(
                 provider=self.__class__.__name__,
                 token_id=self._token_id.lower(),
@@ -102,14 +104,14 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
             self.logger().error(f"Error fetching live token supply data from Glassnode: {e}", exc_info=True)
             return None
 
-    def _validate_data_freshness(self, latest_timestamp: int, interval: IntervalType) -> None:
-        current_time = int(datetime.now(timezone.utc).timestamp() * 1000)
-        interval_ms = CONSTANTS.INTERVAL_TO_DURATION_MS[interval]
+    # glassnode return latest data with ~5 min of delay
+    def _validate_data_freshness(self, start_timestamp: int, interval: IntervalType) -> None:
+        current_time = TimeUtility.now_ms()
         # timestamp is start time of the interval
-        expected_latest = (current_time // interval_ms - 1) * interval_ms
-        if latest_timestamp != expected_latest:
-            expected_dt = datetime.fromtimestamp(expected_latest / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            actual_dt = datetime.fromtimestamp(latest_timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        expected_start_timestamp = IntervalUtility.get_last_interval_start_timestamp(current_time, interval)
+        if start_timestamp != expected_start_timestamp:
+            expected_dt = TimeUtility.ms_to_datetime(expected_start_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            actual_dt = TimeUtility.ms_to_datetime(start_timestamp).strftime("%Y-%m-%d %H:%M:%S")
             raise TokenSupplyProviderError(f"Data not up-to-date. Expected data for {expected_dt}, got {actual_dt}")
 
     def _validate_api_response(self, response: list[dict]) -> None:

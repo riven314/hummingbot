@@ -12,7 +12,7 @@ CONSIDERATIONS:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
@@ -27,6 +27,8 @@ from hummingbot.data_feed.open_interest_market_cap.token_supply_providers.base i
     TokenSupplyProviderBase,
     TokenSupplyProviderError,
 )
+from hummingbot.data_feed.open_interest_market_cap.utils.interval_utils import IntervalUtility
+from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 from hummingbot.logger import HummingbotLogger
 
 
@@ -64,8 +66,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
             )
             return None
         try:
-            dt = datetime.fromisoformat(last_updated_str.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
-            return int(dt.timestamp() * 1000)
+            return TimeUtility.parse_iso_string(last_updated_str)
         except Exception:
             self.logger().error(
                 f"Failed to parse last_updated field ({last_updated_str}) for token {self._token_id}, defaulting to None",
@@ -148,14 +149,14 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
 
     def _is_daily_timestamp(self, timestamp_ms: int) -> bool:
         """Check if timestamp is on a daily boundary (midnight UTC)"""
-        dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+        dt = TimeUtility.ms_to_datetime(timestamp_ms)
         return dt.hour == 0 and dt.minute == 0 and dt.second == 0
 
     def _is_today_daily_timestamp(self, timestamp_ms: int) -> bool:
         """
         check if the last entry of token supply datais up-to-date
         """
-        dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+        dt = TimeUtility.ms_to_datetime(timestamp_ms)
         now = datetime.now(timezone.utc)
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         return dt.date() == today.date()
@@ -238,36 +239,15 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
     def _simulate_interval_timestamps(
         self, current_datetime: datetime, interval: IntervalType, count: int
     ) -> list[int]:
-        interval_map = {
-            "1m": timedelta(minutes=1),
-            "10m": timedelta(minutes=10),
-            "15m": timedelta(minutes=15),
-            "30m": timedelta(minutes=30),
-            "1h": timedelta(hours=1),
-            "1d": timedelta(days=1),
-        }
-        delta = interval_map[interval]
+        current_ms = TimeUtility.datetime_to_ms(current_datetime)
+        aligned_ms = IntervalUtility.align_timestamp(current_ms, interval)
 
-        aligned_datetime = self._get_interval_aligned_datetime(current_datetime, interval)
-
-        timestamps = []
-        current_datetime = aligned_datetime
-        for _ in range(count):
-            timestamps.append(int(current_datetime.timestamp() * 1000))
-            current_datetime -= delta
-
-        return sorted(timestamps)
+        return IntervalUtility.get_interval_timestamps(aligned_ms, interval, count)
 
     def _get_interval_aligned_datetime(self, time: datetime, interval: IntervalType) -> datetime:
-        if interval == "1d":
-            return time.replace(hour=0, minute=0, second=0, microsecond=0)
-        elif interval == "1h":
-            return time.replace(minute=0, second=0, microsecond=0)
-        else:
-            minutes = time.minute
-            interval_minutes = int(interval.replace("m", ""))
-            aligned_minutes = (minutes // interval_minutes) * interval_minutes
-            return time.replace(minute=aligned_minutes, second=0, microsecond=0)
+        timestamp_ms = TimeUtility.datetime_to_ms(time)
+        aligned_ms = IntervalUtility.align_timestamp(timestamp_ms, interval)
+        return TimeUtility.ms_to_datetime(aligned_ms)
 
     def _forward_fill_data(
         self, interval_timestamps: list[int], daily_data: list[HistoricalTokenSupplyData]
@@ -298,7 +278,7 @@ class CoinGeckoTokenSupplyProvider(TokenSupplyProviderBase):
         self, current_datetime: datetime, interval_timestamps: list[int]
     ) -> int:
         oldest_timestamp_ms = min(interval_timestamps)
-        oldest_date = datetime.fromtimestamp(oldest_timestamp_ms / 1000, tz=timezone.utc).date()
+        oldest_date = TimeUtility.ms_to_datetime(oldest_timestamp_ms).date()
         today = current_datetime.date()
         return (today - oldest_date).days + 1
 

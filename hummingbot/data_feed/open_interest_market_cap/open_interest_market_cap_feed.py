@@ -5,12 +5,10 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-import hummingbot.data_feed.open_interest_market_cap.constants as CONSTANTS
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.open_interest_market_cap.data_types import (
-    IntervalType,
     OpenInterestMarketCapConfig,
     OpenInterestMarketCapRecord,
 )
@@ -19,6 +17,8 @@ from hummingbot.data_feed.open_interest_market_cap.token_supply_providers import
     CoinGeckoTokenSupplyProvider,
     GlassnodeTokenSupplyProvider,
 )
+from hummingbot.data_feed.open_interest_market_cap.utils.interval_utils import IntervalUtility
+from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 from hummingbot.logger import HummingbotLogger
 
 
@@ -52,14 +52,11 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
     @property
     def update_interval(self) -> float:
-        return self._parse_interval_to_seconds(self._config.interval)
+        return TimeUtility.to_seconds(IntervalUtility.get_duration_ms(self._config.interval))
 
     @property
     def name(self) -> str:
         return f"{self.__class__.__name__}:{self._config.trading_pair}:{self._config.interval}"
-
-    def _parse_interval_to_seconds(self, interval: IntervalType) -> float:
-        return CONSTANTS.INTERVAL_TO_DURATION_MS[interval] / 1000
 
     def get_next_update_timestamp(self) -> float:
         """
@@ -74,17 +71,9 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
             - The last interval started at 14:30:00
             - The next interval will start at 14:45:00
         """
-        now = datetime.now(timezone.utc)
-        now_timestamp = int(now.timestamp())
-        interval_seconds = self.update_interval
-
-        if self._config.interval == "1d":
-            next_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp() + interval_seconds
-            return next_day * 1000
-
-        intervals_passed = now_timestamp // interval_seconds
-        next_interval_timestamp = (intervals_passed + 1) * interval_seconds
-        return next_interval_timestamp * 1000
+        now_ms = TimeUtility.now_ms()
+        next_interval_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.interval)
+        return next_interval_ms
 
     async def start_network(self):
         await self.stop_network()
@@ -108,8 +97,8 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         while True:
             try:
                 next_update_timestamp_ms = self.get_next_update_timestamp()
-                current_timestamp_s = datetime.now(timezone.utc).timestamp()
-                sleep_time = max(0, next_update_timestamp_ms / 1000 - current_timestamp_s)
+                current_timestamp_ms = TimeUtility.now_ms()
+                sleep_time = max(0, TimeUtility.to_seconds(next_update_timestamp_ms - current_timestamp_ms))
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
@@ -195,7 +184,8 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         else:
             open_interest = oi_result.open_interest
 
-        open_timestamp_ms = int(timestamp_ms - self.update_interval * 1000)
+        interval_ms = IntervalUtility.get_duration_ms(self._config.interval)
+        open_timestamp_ms = timestamp_ms - interval_ms
         self._queue.append(
             OpenInterestMarketCapRecord(
                 open_interest_provider=self._open_interest_provider.name,

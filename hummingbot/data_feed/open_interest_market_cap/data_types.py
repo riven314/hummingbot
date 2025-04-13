@@ -1,12 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, ClassVar, Literal, Optional, Set
 
 from pydantic import BaseModel, validator
 
-IntervalType = Literal["1m", "5m", "10m", "15m", "30m", "1h", "1d"]
+from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 
-MIN_TIMESTAMP_MS = 946684800000  # 2000-01-01 00:00:00
-MAX_TIMESTAMP_MS = 4102444800000  # 2100-01-01 00:00:00
+IntervalType = Literal["1m", "5m", "10m", "15m", "30m", "1h", "1d"]
 
 
 class TimestampValidatorMixin:
@@ -17,7 +16,7 @@ class TimestampValidatorMixin:
     def validate_millisecond_timestamp(cls, value: Optional[int], field: Any) -> Optional[int]:
         if field.name not in cls.timestamp_fields or value is None:
             return value
-        if not (MIN_TIMESTAMP_MS <= value <= MAX_TIMESTAMP_MS):
+        if not TimeUtility.is_valid_timestamp_ms(value):
             raise ValueError(f"{field.name} must be in milliseconds between 2000-01-01 and 2100-01-01")
         return value
 
@@ -40,7 +39,7 @@ class LiveOpenInterestData(BaseModel, TimestampValidatorMixin):
 
     @property
     def recorded_at(self) -> datetime:
-        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+        return TimeUtility.ms_to_datetime(self.timestamp)
 
 
 class HistoricalOpenInterestData(LiveOpenInterestData, TimestampValidatorMixin):
@@ -57,7 +56,7 @@ class HistoricalOpenInterestData(LiveOpenInterestData, TimestampValidatorMixin):
 
     @property
     def recorded_at(self) -> datetime:
-        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+        return TimeUtility.ms_to_datetime(self.timestamp)
 
 
 class LiveTokenSupplyData(BaseModel, TimestampValidatorMixin):
@@ -75,7 +74,7 @@ class LiveTokenSupplyData(BaseModel, TimestampValidatorMixin):
     def recorded_at(self) -> Optional[datetime]:
         if self.timestamp is None:
             return None
-        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+        return TimeUtility.ms_to_datetime(self.timestamp)
 
 
 class HistoricalTokenSupplyData(BaseModel, TimestampValidatorMixin):
@@ -91,7 +90,7 @@ class HistoricalTokenSupplyData(BaseModel, TimestampValidatorMixin):
 
     @property
     def recorded_at(self) -> datetime:
-        return datetime.fromtimestamp(self.timestamp / 1000, tz=timezone.utc)
+        return TimeUtility.ms_to_datetime(self.timestamp)
 
 
 class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin):

@@ -1,5 +1,4 @@
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +14,8 @@ from hummingbot.data_feed.open_interest_market_cap.open_interest_providers.base 
     OpenInterestProviderBase,
     OpenInterestProviderError,
 )
+from hummingbot.data_feed.open_interest_market_cap.utils.interval_utils import IntervalUtility
+from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 from hummingbot.logger import HummingbotLogger
 
 
@@ -82,12 +83,11 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
 
     # OI raw data use closing time as timestamp
     def _validate_data_freshness(self, latest_timestamp: int, interval: IntervalType) -> None:
-        current_time = int(time.time() * 1000)
-        interval_ms = self._get_interval_duration_ms(interval)
-        expected_latest = (current_time // interval_ms) * interval_ms
+        current_time = TimeUtility.now_ms()
+        expected_latest = IntervalUtility.align_timestamp(current_time, interval)
         if latest_timestamp != expected_latest:
-            expected_dt = datetime.fromtimestamp(expected_latest / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            actual_dt = datetime.fromtimestamp(latest_timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            expected_dt = TimeUtility.ms_to_datetime(expected_latest).strftime("%Y-%m-%d %H:%M:%S")
+            actual_dt = TimeUtility.ms_to_datetime(latest_timestamp).strftime("%Y-%m-%d %H:%M:%S")
             raise OpenInterestProviderError(f"Data not up-to-date. Expected data for {expected_dt}, got {actual_dt}")
 
     def _validate_api_response(self, response: List[Dict[str, Any]]) -> None:
@@ -103,11 +103,10 @@ class BinanceOpenInterestProvider(OpenInterestProviderBase):
                 raise OpenInterestProviderError(f"Invalid open interest value: {data_point}")
 
     def _get_interval_duration_ms(self, interval: IntervalType) -> int:
-        return CONSTANTS.INTERVAL_TO_DURATION_MS[interval]
+        return IntervalUtility.get_duration_ms(interval)
 
     def _is_belong_to_interval(self, timestamp: int, interval: IntervalType) -> bool:
-        interval_ms = self._get_interval_duration_ms(interval)
-        return timestamp % interval_ms == 0
+        return IntervalUtility.is_aligned(timestamp, interval)
 
     # I saw missing data from binance historical OI endpoint before
     def _check_and_fill_missing_data(
