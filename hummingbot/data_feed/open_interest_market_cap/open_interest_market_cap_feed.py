@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import statistics
 from abc import ABC
 from collections import deque
 from datetime import datetime, timezone
@@ -23,8 +24,6 @@ from hummingbot.logger import HummingbotLogger
 
 
 # TODO: handle the case when update interval (e.g. 10m) is higher resolution than trading interval (e.g. 1h)
-# TODO: better fallback when live data request is failing (fallback to previous snapshot, and add retry)
-# TODO: OpenInterestMarketCapRecord should include field to indicate the data actual timestamp (e.g. last_updated)
 class OpenInterestMarketCapFeed(DataFeedBase, ABC):
     oi_mcap_logger: Optional[HummingbotLogger] = None
     _oi_mcap_shared_instance: Optional["OpenInterestMarketCapFeed"] = None
@@ -136,10 +135,11 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                     symbol=self._config.trading_pair,
                     open_interest=oi.open_interest,
                     token_supply=ts.total_supply,
-                    timestamp=oi.timestamp,
-                    requested_at=requested_at,
+                    zscore=None,  # no zscore in warm up period
                     is_open_interest_estimated=oi.is_estimated,
                     is_token_supply_estimated=ts.is_estimated,
+                    timestamp=oi.timestamp,
+                    requested_at=requested_at,
                 )
             )
         self.logger().info(
@@ -193,9 +193,79 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 symbol=self._config.trading_pair,
                 open_interest=open_interest,
                 token_supply=token_supply,
-                timestamp=open_timestamp_ms,
-                requested_at=requested_at,
+                zscore=None,
                 is_open_interest_estimated=is_oi_estimated,
                 is_token_supply_estimated=is_ts_estimated,
+                timestamp=open_timestamp_ms,
+                requested_at=requested_at,
             )
         )
+        self._queue[-1].zscore = self.get_last_zscore()
+
+    def is_updated(self) -> bool:
+        if not self.ready:
+            return False
+
+        now_ms = TimeUtility.now_ms()
+        expected_timestamp_ms = IntervalUtility.get_last_interval_start_timestamp(now_ms, self._config.interval)
+        last_record = self._queue[-1]
+        _is_updated = last_record.timestamp == expected_timestamp_ms
+        if not _is_updated:
+            self.logger().warning(
+                f"Open interest market cap data is not updated, last_record: {last_record.timestamp} vs expected: {expected_timestamp_ms}"
+            )
+        return _is_updated
+
+    def get_last_zscore(self) -> float:
+        ratios = [record.oi_mcap_ratio for record in self._queue]
+        mean = statistics.mean(ratios)
+        std_dev = statistics.stdev(ratios)
+        last_ratio = ratios[-1]
+        return (last_ratio - mean) / std_dev
+
+    def format_status_records(self, record_count: int) -> str:
+        lines = []
+        lines.append("\nOpen Interest Market Cap Records:")
+
+        # create headers
+        headers = [
+            "Open Interest",
+            "Token Supply",
+            "Timestamp",
+            "Requested At",
+            "OI/MCap Ratio",
+            "Z-Score",
+        ]
+
+        widths = {header: len(header) for header in headers}
+        sample_record = self._queue[-1]
+        timestamp = datetime.fromtimestamp(sample_record.timestamp / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        widths[headers[0]] = max(widths[headers[0]], len(f"{sample_record.open_interest:,.2f}"))
+        widths[headers[1]] = max(widths[headers[1]], len(f"{sample_record.token_supply:,.2f}"))
+        widths[headers[2]] = max(widths[headers[2]], len(timestamp))
+        widths[headers[3]] = max(widths[headers[3]], len(sample_record.requested_at.strftime("%Y-%m-%d %H:%M:%S")))
+        widths[headers[4]] = max(widths[headers[4]], len(f"{sample_record.oi_mcap_ratio:.5f}"))
+        widths[headers[5]] = max(widths[headers[5]], 8)
+
+        format_str = "  ".join(f"{{:{widths[header]}}}" for header in headers)
+        lines.append(format_str.format(*headers))
+        lines.append("-" * (sum(widths.values()) + 2 * (len(headers) - 1)))
+
+        # create rows
+        for record in list(self._queue)[-record_count:]:
+            timestamp = datetime.fromtimestamp(record.timestamp / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            requested_at = record.requested_at.strftime("%Y-%m-%d %H:%M:%S")
+
+            row = format_str.format(
+                f"{record.open_interest:,.2f}",
+                f"{record.token_supply:,.2f}",
+                timestamp,
+                requested_at,
+                f"{record.oi_mcap_ratio:.5f}",
+                f"{record.zscore:.6f}" if record.zscore is not None else "N/A",
+            )
+            lines.append(row)
+
+        return "\n".join(lines)

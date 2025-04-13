@@ -99,10 +99,11 @@ class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin):
     symbol: str
     open_interest: float
     token_supply: float
-    timestamp: int
-    requested_at: datetime
+    zscore: Optional[float]
     is_open_interest_estimated: bool = False
     is_token_supply_estimated: bool = False
+    timestamp: int
+    requested_at: datetime
 
     timestamp_fields = {"timestamp"}
 
