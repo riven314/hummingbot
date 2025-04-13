@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
-from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.open_interest_market_cap.data_types import (
@@ -247,7 +247,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         widths[headers[2]] = max(widths[headers[2]], len(timestamp))
         widths[headers[3]] = max(widths[headers[3]], len(sample_record.requested_at.strftime("%Y-%m-%d %H:%M:%S")))
         widths[headers[4]] = max(widths[headers[4]], len(f"{sample_record.oi_mcap_ratio:.5f}"))
-        widths[headers[5]] = max(widths[headers[5]], 8)
+        widths[headers[5]] = max(widths[headers[5]], 6)
 
         format_str = "  ".join(f"{{:{widths[header]}}}" for header in headers)
         lines.append(format_str.format(*headers))
@@ -264,7 +264,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 timestamp,
                 requested_at,
                 f"{record.oi_mcap_ratio:.5f}",
-                f"{record.zscore:.6f}" if record.zscore is not None else "N/A",
+                f"{record.zscore:.4f}" if record.zscore is not None else "N/A",
             )
             lines.append(row)
 
