@@ -21,13 +21,23 @@ class TimestampValidatorMixin:
         return value
 
 
+class SymbolValidatorMixin:
+    @validator("symbol")
+    def validate_symbol(cls, symbol: str) -> str:
+        if not symbol:
+            raise ValueError("Symbol cannot be empty")
+        if "-" in symbol:
+            raise ValueError("Symbol cannot contain '-', use format like 'BTCUSDT' instead of 'BTC-USDT'")
+        return symbol
+
+
 class OpenInterestMarketCapConfig(BaseModel):
     trading_pair: str
     interval: IntervalType
     window: int
 
 
-class LiveOpenInterestData(BaseModel, TimestampValidatorMixin):
+class LiveOpenInterestData(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin):
     provider: str
     symbol: str
     open_interest: float
@@ -42,7 +52,7 @@ class LiveOpenInterestData(BaseModel, TimestampValidatorMixin):
         return TimeUtility.ms_to_datetime(self.timestamp)
 
 
-class HistoricalOpenInterestData(LiveOpenInterestData, TimestampValidatorMixin):
+class HistoricalOpenInterestData(LiveOpenInterestData, TimestampValidatorMixin, SymbolValidatorMixin):
     provider: str
     symbol: str
     open_interest: float
@@ -93,7 +103,7 @@ class HistoricalTokenSupplyData(BaseModel, TimestampValidatorMixin):
         return TimeUtility.ms_to_datetime(self.timestamp)
 
 
-class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin):
+class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin):
     open_interest_provider: str
     token_supply_provider: str
     symbol: str
