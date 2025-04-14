@@ -20,6 +20,8 @@ from hummingbot.data_feed.open_interest_market_cap.utils.interval_utils import I
 from hummingbot.data_feed.open_interest_market_cap.utils.time_utils import TimeUtility
 from hummingbot.logger import HummingbotLogger
 
+GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY")
+
 
 class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
     _logger: Optional[HummingbotLogger] = None
@@ -32,9 +34,9 @@ class GlassnodeTokenSupplyProvider(TokenSupplyProviderBase):
 
     def __init__(self, token_id: str):
         self._token_id = self._get_glassnode_token_id(token_id)
-        self._api_key = os.getenv("GLASSNODE_API_KEY")
-        if not self._api_key:
+        if not GLASSNODE_API_KEY:
             raise TokenSupplyProviderError("GLASSNODE_API_KEY environment variable not set")
+        self._api_key = GLASSNODE_API_KEY
         self._throttler = AsyncThrottler(rate_limits=CONSTANTS.GLASSNODE_RATE_LIMITS)
         self._api_factory = WebAssistantsFactory(throttler=self._throttler)
 
