@@ -76,7 +76,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
 
     async def start_network(self):
         await self.stop_network()
-        self.logger().info(f"Starting {self.name} fetch lopp task...")
+        self.logger().info(f"Starting {self.name} fetch loop task...")
         self._fetch_loop_task = safe_ensure_future(self._fetch_loop())
 
     async def stop_network(self):
@@ -228,45 +228,48 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         lines = []
         lines.append("\nOpen Interest Market Cap Records:")
 
-        # create headers
-        headers = [
-            "Open Interest",
-            "Token Supply",
-            "Timestamp",
-            "Requested At",
-            "OI/MCap Ratio",
-            "Z-Score",
-        ]
+        if len(self._queue) > 0:
+            # create headers
+            headers = [
+                "Open Interest",
+                "Token Supply",
+                "Timestamp",
+                "Requested At",
+                "OI/MCap Ratio",
+                "Z-Score",
+            ]
 
-        widths = {header: len(header) for header in headers}
-        sample_record = self._queue[-1]
-        timestamp = datetime.fromtimestamp(sample_record.timestamp / 1000, tz=timezone.utc).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        widths[headers[0]] = max(widths[headers[0]], len(f"{sample_record.open_interest:,.2f}"))
-        widths[headers[1]] = max(widths[headers[1]], len(f"{sample_record.token_supply:,.2f}"))
-        widths[headers[2]] = max(widths[headers[2]], len(timestamp))
-        widths[headers[3]] = max(widths[headers[3]], len(sample_record.requested_at.strftime("%Y-%m-%d %H:%M:%S")))
-        widths[headers[4]] = max(widths[headers[4]], len(f"{sample_record.oi_mcap_ratio:.5f}"))
-        widths[headers[5]] = max(widths[headers[5]], 6)
-
-        format_str = "  ".join(f"{{:{widths[header]}}}" for header in headers)
-        lines.append(format_str.format(*headers))
-        lines.append("-" * (sum(widths.values()) + 2 * (len(headers) - 1)))
-
-        # create rows
-        for record in list(self._queue)[-record_count:]:
-            timestamp = datetime.fromtimestamp(record.timestamp / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            requested_at = record.requested_at.strftime("%Y-%m-%d %H:%M:%S")
-
-            row = format_str.format(
-                f"{record.open_interest:,.2f}",
-                f"{record.token_supply:,.2f}",
-                timestamp,
-                requested_at,
-                f"{record.oi_mcap_ratio:.5f}",
-                f"{record.zscore:.4f}" if record.zscore is not None else "N/A",
+            widths = {header: len(header) for header in headers}
+            sample_record = self._queue[-1]
+            timestamp = datetime.fromtimestamp(sample_record.timestamp / 1000, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S"
             )
-            lines.append(row)
+            widths[headers[0]] = max(widths[headers[0]], len(f"{sample_record.open_interest:,.2f}"))
+            widths[headers[1]] = max(widths[headers[1]], len(f"{sample_record.token_supply:,.2f}"))
+            widths[headers[2]] = max(widths[headers[2]], len(timestamp))
+            widths[headers[3]] = max(widths[headers[3]], len(sample_record.requested_at.strftime("%Y-%m-%d %H:%M:%S")))
+            widths[headers[4]] = max(widths[headers[4]], len(f"{sample_record.oi_mcap_ratio:.5f}"))
+            widths[headers[5]] = max(widths[headers[5]], 6)
+
+            format_str = "  ".join(f"{{:{widths[header]}}}" for header in headers)
+            lines.append(format_str.format(*headers))
+            lines.append("-" * (sum(widths.values()) + 2 * (len(headers) - 1)))
+
+            # create rows
+            for record in list(self._queue)[-record_count:]:
+                timestamp = datetime.fromtimestamp(record.timestamp / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                requested_at = record.requested_at.strftime("%Y-%m-%d %H:%M:%S")
+
+                row = format_str.format(
+                    f"{record.open_interest:,.2f}",
+                    f"{record.token_supply:,.2f}",
+                    timestamp,
+                    requested_at,
+                    f"{record.oi_mcap_ratio:.5f}",
+                    f"{record.zscore:.4f}" if record.zscore is not None else "N/A",
+                )
+                lines.append(row)
 
         return "\n".join(lines)
