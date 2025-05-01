@@ -103,6 +103,7 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         return True
 
     async def _manage_listen_key_task_loop(self):
+        self.logger().info("Starting running listen key task loop...")
         while True:
             try:
                 now = int(time.time())
@@ -131,24 +132,36 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             finally:
                 await asyncio.sleep(5.0)
 
+    async def _cancel_listen_key_task(self, timeout: float) -> None:
+        if self._manage_listen_key_task and not self._manage_listen_key_task.done():
+            self.logger().info("Cancelling existing listen key management task...")
+            self._manage_listen_key_task.cancel()
+            try:
+                await asyncio.wait_for(self._manage_listen_key_task, timeout=timeout)
+            except asyncio.TimeoutError:
+                self.logger().warning("Cancellation of listen key task timed out")
+            except asyncio.CancelledError:
+                # This is the expected outcome
+                self.logger().info("Listen key management task cancelled successfully")
+            except Exception as e:
+                self.logger().warning(f"Unexpected error during listen key task cancellation: {e}")
+            finally:
+                self._manage_listen_key_task = None
+                self._listen_key_initialized_event.clear()
+                self.logger().info("Listen key management resources cleared")
+        elif self._manage_listen_key_task and self._manage_listen_key_task.done():
+            self.logger().info("Listen key management task already completed, no need to cancel")
+            self._manage_listen_key_task = None
+            self._listen_key_initialized_event.clear()
+            self.logger().info("Listen key management resources cleared")
+
     async def _connected_websocket_assistant(self) -> WSAssistant:
         """
         Creates an instance of WSAssistant connected to the exchange
         """
         timeout = 5.
-
         # ensure any existing manage listen key task is cancelled
-        if self._manage_listen_key_task:
-            self.logger().warning("Existing manage listen key task is found, cancelling it...")
-            self._manage_listen_key_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(self._manage_listen_key_task), timeout=timeout + 3)
-                self.logger().warning("Existing manage listen key task has been cancelled successfully")
-            except Exception as e:
-                self.logger().warning(f"Existing manage listen key task has been cancelled but encountered an error: {e}")
-            finally:
-                self._manage_listen_key_task = None
-                self._listen_key_initialized_event.clear()
+        await self._cancel_listen_key_task(timeout=timeout * 2)
 
         # start new task to create and renew listen key
         self._manage_listen_key_task = safe_ensure_future(self._manage_listen_key_task_loop())
