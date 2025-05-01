@@ -55,21 +55,33 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
             self._ws_assistant = await self._api_factory.get_ws_assistant()
         return self._ws_assistant
 
-    async def _get_listen_key(self):
-        rest_assistant = await self._api_factory.get_rest_assistant()
-        try:
-            data = await rest_assistant.execute_request(
-                url=web_utils.private_rest_url(path_url=CONSTANTS.BINANCE_USER_STREAM_ENDPOINT, domain=self._domain),
-                method=RESTMethod.POST,
-                throttler_limit_id=CONSTANTS.BINANCE_USER_STREAM_ENDPOINT,
-                headers=self._auth.header_for_authentication()
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exception:
-            raise IOError(f"Error fetching user stream listen key. Error: {exception}")
+    async def _get_listen_key(self, max_retries: int = 2):
+        timeout = 5.
+        retry_count = 0
+        backoff_time = 1.0
 
-        return data["listenKey"]
+        rest_assistant = await self._api_factory.get_rest_assistant()
+        while True:
+            try:
+                data = await rest_assistant.execute_request(
+                    url=web_utils.private_rest_url(path_url=CONSTANTS.BINANCE_USER_STREAM_ENDPOINT, domain=self._domain),
+                    method=RESTMethod.POST,
+                    throttler_limit_id=CONSTANTS.BINANCE_USER_STREAM_ENDPOINT,
+                    headers=self._auth.header_for_authentication(),
+                    timeout=timeout,
+                )
+                return data["listenKey"]
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exception:
+                retry_count += 1
+                if retry_count > max_retries:
+                    raise IOError(f"Error fetching user stream listen key. Error: {exception}")
+
+                self.logger().warning(f"Retry {retry_count}/{max_retries} fetching user stream listen key. Error: {exception}")
+                await asyncio.sleep(backoff_time)
+                backoff_time *= 2
 
     async def _ping_listen_key(self) -> bool:
         try:
@@ -107,6 +119,11 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
                         self._last_listen_key_ping_ts = int(time.time())
                     else:
                         raise Exception(f"Error occurred renewing listen key {self._current_listen_key}")
+
+            except asyncio.CancelledError:
+                self.logger().error("Cancel signal received, cancelling manage listen key task")
+                self._current_listen_key = None
+                self._listen_key_initialized_event.clear()
             except Exception as e:
                 self.logger().error(f"Error occurred managing the user stream listen key: {e}")
                 self._current_listen_key = None
@@ -118,9 +135,26 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         """
         Creates an instance of WSAssistant connected to the exchange
         """
+        timeout = 5.
+
+        # ensure any existing manage listen key task is cancelled
+        if self._manage_listen_key_task:
+            self.logger().warning("Existing manage listen key task is found, cancelling it...")
+            self._manage_listen_key_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(self._manage_listen_key_task), timeout=timeout + 3)
+                self.logger().warning("Existing manage listen key task has been cancelled successfully")
+            except Exception as e:
+                self.logger().warning(f"Existing manage listen key task has been cancelled but encountered an error: {e}")
+            finally:
+                self._manage_listen_key_task = None
+                self._listen_key_initialized_event.clear()
+
+        # start new task to create and renew listen key
         self._manage_listen_key_task = safe_ensure_future(self._manage_listen_key_task_loop())
         await self._listen_key_initialized_event.wait()
 
+        self.logger().info("Successfully initialized the listen key, now proceeding to connect to the user stream...")
         ws: WSAssistant = await self._get_ws_assistant()
         url = f"{web_utils.wss_url(CONSTANTS.PRIVATE_WS_ENDPOINT, self._domain)}/{self._current_listen_key}"
         await ws.connect(ws_url=url, ping_timeout=self.HEARTBEAT_TIME_INTERVAL)
@@ -137,6 +171,7 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
         pass
 
     async def _on_user_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
+        self.logger().warning("User stream interrupted. Disconnecting...")
         websocket_assistant and await websocket_assistant.disconnect()
         self._manage_listen_key_task and self._manage_listen_key_task.cancel()
         self._current_listen_key = None
