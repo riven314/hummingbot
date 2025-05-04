@@ -16,5 +16,13 @@ BINANCE_FUNDING_RATE_RATE_LIMITS = [RateLimit(BINANCE_FUNDING_RATE_LIMIT_ID, lim
 IntervalType = Literal["8h", "4h", "1h"]
 FUNDING_RATE_INTERVALS: Set[IntervalType] = {"8h", "4h", "1h"}
 
+# --- Trading Pair Funding Period Config ----
+BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL: dict[str, IntervalType] = {
+    "BTCUSDT": "8h",
+    "ETHUSDT": "8h",
+    "SOLUSDT": "8h",
+}
+
+
 # --- Defaults ---
 DEFAULT_TIMEOUT: float = 10.0

@@ -7,7 +7,11 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
-from hummingbot.data_feed.funding_rate.constants import BINANCE_FUNDING_RATE_COUNT_LIMIT, DEFAULT_TIMEOUT
+from hummingbot.data_feed.funding_rate.constants import (
+    BINANCE_FUNDING_RATE_COUNT_LIMIT,
+    BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL,
+    DEFAULT_TIMEOUT,
+)
 from hummingbot.data_feed.funding_rate.data_types import FundingRateConfig, FundingRateRecord
 from hummingbot.data_feed.funding_rate.providers.base import FundingRateProviderBase
 from hummingbot.data_feed.funding_rate.providers.binance_perpetual import BinanceFundingRateProvider
@@ -31,9 +35,13 @@ class FundingRateDataFeed(DataFeedBase):
     ):
         super().__init__()
         self._config: FundingRateConfig = config
+        expected_interval = BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL[self._config.trading_pair]
+        if self._config.interval != expected_interval:
+            raise ValueError(
+                f"Binance {self._config.trading_pair} expects funding interval to be {expected_interval}, but {self._config.interval} was provided"
+            )
         self._provider: FundingRateProviderBase = BinanceFundingRateProvider(
             trading_pair=self._config.trading_pair,
-            interval=self._config.interval,
         )
         self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self._config.window)
         self._fetch_task: Optional[asyncio.Task] = None
