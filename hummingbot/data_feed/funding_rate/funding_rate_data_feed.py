@@ -6,15 +6,8 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
-from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.data_feed.data_feed_base import DataFeedBase
-from hummingbot.data_feed.funding_rate.constants import (
-    BINANCE_FUNDING_RATE_COUNT_LIMIT,
-    BINANCE_FUNDING_RATE_LIMIT_ID,
-    BINANCE_REQUESTS_PER_MINUTE_LIMIT,
-    DEFAULT_TIMEOUT,
-    ONE_MINUTE,
-)
+from hummingbot.data_feed.funding_rate.constants import BINANCE_FUNDING_RATE_COUNT_LIMIT, DEFAULT_TIMEOUT
 from hummingbot.data_feed.funding_rate.data_types import FundingRateConfig, FundingRateRecord
 from hummingbot.data_feed.funding_rate.providers.base import FundingRateProviderBase
 from hummingbot.data_feed.funding_rate.providers.binance_perpetual import BinanceFundingRateProvider
@@ -35,11 +28,13 @@ class FundingRateDataFeed(DataFeedBase):
     def __init__(
         self,
         config: FundingRateConfig,
-        web_assistants_factory: Optional[WebAssistantsFactory] = None,
     ):
         super().__init__()
         self._config: FundingRateConfig = config
-        self._provider: FundingRateProviderBase = self._create_provider(web_assistants_factory)
+        self._provider: FundingRateProviderBase = BinanceFundingRateProvider(
+            trading_pair=self._config.trading_pair,
+            interval=self._config.interval,
+        )
         self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self._config.window)
         self._fetch_task: Optional[asyncio.Task] = None
         self._data_ready_event: asyncio.Event = asyncio.Event()
@@ -60,19 +55,6 @@ class FundingRateDataFeed(DataFeedBase):
     def get_last_zscore(self) -> Optional[float]:
         last_record = self.get_last_funding_rate_record()
         return last_record.zscore if last_record else None
-
-    def _create_provider(self, web_assistants_factory: Optional[WebAssistantsFactory]) -> FundingRateProviderBase:
-        factory = web_assistants_factory or self._create_web_assistants_factory()
-        return BinanceFundingRateProvider(
-            trading_pair=self._config.trading_pair,
-            web_assistants_factory=factory,
-            interval=self._config.interval,
-        )
-
-    def _create_web_assistants_factory(self) -> WebAssistantsFactory:
-        # Configure throttler specific to Binance funding rate endpoint
-        throttler_config = [(BINANCE_FUNDING_RATE_LIMIT_ID, BINANCE_REQUESTS_PER_MINUTE_LIMIT, ONE_MINUTE)]
-        return WebAssistantsFactory(throttler_limit_id_config_map=throttler_config)
 
     async def start_network(self):
         await self.stop_network()
