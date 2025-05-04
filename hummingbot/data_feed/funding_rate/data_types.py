@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, validator
+from pydantic.fields import ModelField
 
 from hummingbot.data_feed.funding_rate.constants import FUNDING_RATE_INTERVALS, IntervalType
 from hummingbot.data_feed.funding_rate.utils.time_utils import TimeUtility
@@ -10,7 +11,7 @@ from hummingbot.data_feed.funding_rate.utils.time_utils import TimeUtility
 
 class TimestampValidatorMixin(BaseModel):
     @validator("*", pre=True, allow_reuse=True)
-    def check_valid_timestamp_ms(cls, v: Any, field: Field) -> Any:
+    def check_valid_timestamp_ms(cls, v: Any, field: ModelField) -> Any:
         if "time" in field.name.lower() and isinstance(v, (int, float)):
             if not TimeUtility.is_valid_timestamp_ms(v):
                 raise ValueError(f"Invalid millisecond timestamp for {field.name}: {v}")
@@ -19,7 +20,7 @@ class TimestampValidatorMixin(BaseModel):
 
 class SymbolValidatorMixin(BaseModel):
     @validator("symbol", "trading_pair", pre=True, allow_reuse=True)
-    def check_symbol_format(cls, v: str) -> str:
+    def check_symbol_no_hyphen(cls, v: str) -> str:
         # Expecting format like BTCUSDT (no hyphens or slashes)
         if not re.fullmatch(r"^[A-Z0-9]+$", v):
             raise ValueError(f"Invalid symbol/trading_pair format: {v}. Expected format like 'BTCUSDT'.")

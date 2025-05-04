@@ -4,7 +4,7 @@ import statistics
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.funding_rate.constants import BINANCE_FUNDING_RATE_COUNT_LIMIT, DEFAULT_TIMEOUT
