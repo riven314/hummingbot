@@ -119,7 +119,7 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
                     f"Missing funding rate data at timestamp: {current_ts}, forward fill by last valid entry"
                 )
                 filled_entry = FundingRateRecord(
-                    provider=last_valid_entry.provider,
+                    exchange=last_valid_entry.exchange,
                     symbol=last_valid_entry.symbol,
                     funding_time=current_ts,
                     aligned_funding_time=current_ts,
@@ -151,7 +151,7 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
             for item in data:
                 funding_time_ms = int(item["fundingTime"])
                 record = FundingRateRecord(
-                    provider=self.name,
+                    exchange="binance_perpetual",
                     symbol=item["symbol"],
                     funding_time=funding_time_ms,
                     aligned_funding_time=IntervalUtility.align_timestamp(funding_time_ms, self._interval),

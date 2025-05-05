@@ -13,10 +13,8 @@ class FundingRateDatabase:
     _shared_instance: Optional["FundingRateDatabase"] = None
 
     @classmethod
-    def get_instance(cls, db_path: Optional[Path] = None) -> "FundingRateDatabase":
+    def get_instance(cls, db_path: Path) -> "FundingRateDatabase":
         if cls._shared_instance is None:
-            if db_path is None:
-                raise ValueError("Database path must be provided for the first instance.")
             cls._shared_instance = FundingRateDatabase(db_path)
         return cls._shared_instance
 
@@ -51,7 +49,7 @@ class FundingRateDatabase:
                 """
                 CREATE TABLE IF NOT EXISTS FundingRate (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    provider TEXT NOT NULL,
+                    exchange TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     funding_time INTEGER NOT NULL,
                     aligned_funding_time INTEGER NOT NULL,
@@ -59,7 +57,7 @@ class FundingRateDatabase:
                     mark_price REAL NOT NULL,
                     zscore REAL NULL,
                     requested_at TEXT NOT NULL,
-                    UNIQUE (provider, symbol, aligned_funding_time)
+                    UNIQUE (exchange, symbol, aligned_funding_time)
                 )
                 """
             )
@@ -67,7 +65,7 @@ class FundingRateDatabase:
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_funding_rate_lookup
-                ON FundingRate (provider, symbol, aligned_funding_time DESC)
+                ON FundingRate (exchange, symbol, aligned_funding_time DESC)
                 """
             )
             self._conn.commit()
@@ -86,7 +84,7 @@ class FundingRateDatabase:
             cursor = self._conn.cursor()
             data_to_insert = [
                 (
-                    r.provider,
+                    r.exchange,
                     r.symbol,
                     r.funding_time,
                     r.aligned_funding_time,
@@ -100,7 +98,7 @@ class FundingRateDatabase:
             cursor.executemany(
                 """
                 INSERT OR IGNORE INTO FundingRate
-                (provider, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at)
+                (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 data_to_insert,
@@ -109,28 +107,29 @@ class FundingRateDatabase:
             self.logger().debug(f"Inserted or ignored {len(data_to_insert)} records.")
         except sqlite3.Error as e:
             self.logger().error(f"Error inserting funding rate records: {e}", exc_info=True)
-            # Don't raise here, allow the feed to continue
 
-    def get_last_timestamp(self, provider: str, symbol: str) -> Optional[int]:
+    def get_last_aligned_funding_time(self, exchange: str, symbol: str) -> Optional[int]:
         if not self._conn:
             raise ConnectionError("Database connection is not available.")
         try:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT MAX(funding_time) as last_ts
+                SELECT aligned_funding_time as last_ts
                 FROM FundingRate
-                WHERE provider = ? AND symbol = ?
+                WHERE exchange = ? AND symbol = ?
+                ORDER BY aligned_funding_time DESC
+                LIMIT 1
                 """,
-                (provider, symbol),
+                (exchange, symbol),
             )
             result = cursor.fetchone()
             return result["last_ts"] if result and result["last_ts"] is not None else None
         except sqlite3.Error as e:
-            self.logger().error(f"Error fetching last timestamp for {provider}/{symbol}: {e}", exc_info=True)
-            return None  # Allow feed to proceed, might fetch more history
+            self.logger().error(f"Error fetching last timestamp for {exchange} {symbol}: {e}", exc_info=True)
+            return None
 
-    def get_historical_records(self, provider: str, symbol: str, limit: int) -> List[FundingRateRecord]:
+    def get_historical_records(self, exchange: str, symbol: str, limit: int) -> List[FundingRateRecord]:
         if not self._conn:
             raise ConnectionError("Database connection is not available.")
         records = []
@@ -138,26 +137,24 @@ class FundingRateDatabase:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT provider, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at
+                SELECT exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at
                 FROM FundingRate
-                WHERE provider = ? AND symbol = ?
+                WHERE exchange = ? AND symbol = ?
                 ORDER BY aligned_funding_time DESC
                 LIMIT ?
                 """,
-                (provider, symbol, limit),
+                (exchange, symbol, limit),
             )
             rows = cursor.fetchall()
             for row in rows:
                 row_dict = dict(row)
-                # Convert requested_at back to datetime
                 row_dict["requested_at"] = datetime.fromisoformat(row_dict["requested_at"])
                 records.append(FundingRateRecord.parse_obj(row_dict))
-            # Return in ascending time order for deque population
-            records.reverse()
+            records.sort(key=lambda x: x.aligned_funding_time)
             return records
         except sqlite3.Error as e:
-            self.logger().error(f"Error fetching historical records for {provider}/{symbol}: {e}", exc_info=True)
-            return []  # Return empty list on error
+            self.logger().error(f"Error fetching historical records for {exchange} {symbol}: {e}", exc_info=True)
+            return []
 
     def close(self):
         if self._conn:

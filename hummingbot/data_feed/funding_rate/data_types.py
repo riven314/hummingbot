@@ -44,7 +44,7 @@ class FundingRateConfig(BaseModel, SymbolValidatorMixin):
 
 
 class FundingRateRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin):
-    provider: str
+    exchange: str
     symbol: str
     # funding time may be milliseconds difference from the aligned funding time
     funding_time: int
