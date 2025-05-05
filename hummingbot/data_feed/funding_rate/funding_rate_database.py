@@ -54,11 +54,12 @@ class FundingRateDatabase:
                     provider TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     funding_time INTEGER NOT NULL,
+                    aligned_funding_time INTEGER NOT NULL,
                     funding_rate REAL NOT NULL,
                     mark_price REAL NOT NULL,
                     zscore REAL NULL,
                     requested_at TEXT NOT NULL,
-                    UNIQUE (provider, symbol, funding_time)
+                    UNIQUE (provider, symbol, aligned_funding_time)
                 )
                 """
             )
@@ -66,7 +67,7 @@ class FundingRateDatabase:
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_funding_rate_lookup
-                ON FundingRate (provider, symbol, funding_time DESC)
+                ON FundingRate (provider, symbol, aligned_funding_time DESC)
                 """
             )
             self._conn.commit()
@@ -88,6 +89,7 @@ class FundingRateDatabase:
                     r.provider,
                     r.symbol,
                     r.funding_time,
+                    r.aligned_funding_time,
                     r.funding_rate,
                     r.mark_price,
                     r.zscore,
@@ -98,8 +100,8 @@ class FundingRateDatabase:
             cursor.executemany(
                 """
                 INSERT OR IGNORE INTO FundingRate
-                (provider, symbol, funding_time, funding_rate, mark_price, zscore, requested_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (provider, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 data_to_insert,
             )
@@ -136,10 +138,10 @@ class FundingRateDatabase:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT provider, symbol, funding_time, funding_rate, mark_price, zscore, requested_at
+                SELECT provider, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at
                 FROM FundingRate
                 WHERE provider = ? AND symbol = ?
-                ORDER BY funding_time DESC
+                ORDER BY aligned_funding_time DESC
                 LIMIT ?
                 """,
                 (provider, symbol, limit),
