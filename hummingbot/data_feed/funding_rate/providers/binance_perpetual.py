@@ -133,8 +133,8 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
 
         return result
 
-    async def fetch_funding_rate(self, count: int) -> List[FundingRateRecord]:
-        params: Dict[str, Any] = {"symbol": self._trading_pair, "limit": count}
+    async def fetch_funding_rate(self, limit: int) -> List[FundingRateRecord]:
+        params: Dict[str, Any] = {"symbol": self._trading_pair, "limit": limit}
         try:
             rest_assistant = await self._api_factory.get_rest_assistant()
             data: List[Dict[str, Any]] = await rest_assistant.execute_request(
@@ -164,7 +164,7 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
             records.sort(key=lambda r: r.funding_time)
             self._validate_data_freshness(records[-1].aligned_funding_time, self._interval)
             records = self._check_and_fill_missing_data(records, self._interval)
-            return records[-count:]
+            return records[-limit:]
 
         except FundingRateProviderError as e:
             raise e
