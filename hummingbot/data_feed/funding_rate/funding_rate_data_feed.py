@@ -2,7 +2,7 @@ import asyncio
 import logging
 import statistics
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, List, Optional, Tuple
 
 from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
 from hummingbot.core.utils.async_utils import safe_ensure_future
@@ -10,7 +10,6 @@ from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.funding_rate.constants import (
     BINANCE_FUNDING_RATE_COUNT_LIMIT,
     BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL,
-    DEFAULT_TIMEOUT,
 )
 from hummingbot.data_feed.funding_rate.data_types import FundingRateConfig, FundingRateRecord
 from hummingbot.data_feed.funding_rate.providers.base import FundingRateProviderBase
@@ -43,11 +42,10 @@ class FundingRateDataFeed(DataFeedBase):
         self._provider: FundingRateProviderBase = BinanceFundingRateProvider(
             trading_pair=self._config.trading_pair,
         )
-        self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self._config.window)
+        self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self.deque_size)
         self._fetch_task: Optional[asyncio.Task] = None
         self._data_ready_event: asyncio.Event = asyncio.Event()
         self._last_update_ms: int = 0
-        self._interval_ms: int = IntervalUtility.get_duration_ms(self._config.interval)
 
     @property
     def name(self) -> str:
@@ -57,12 +55,21 @@ class FundingRateDataFeed(DataFeedBase):
     def funding_rate_records(self) -> List[FundingRateRecord]:
         return list(self._funding_rate_deque)
 
-    def get_last_funding_rate_record(self) -> Optional[FundingRateRecord]:
-        return self._funding_rate_deque[-1] if self._funding_rate_deque else None
+    @property
+    def window(self) -> int:
+        return self._config.window
 
-    def get_last_zscore(self) -> Optional[float]:
-        last_record = self.get_last_funding_rate_record()
-        return last_record.zscore if last_record else None
+    @property
+    def deque_size(self) -> int:
+        return self.window + 5
+
+    @property
+    def interval_ms(self) -> int:
+        return IntervalUtility.get_duration_ms(self._config.interval)
+
+    @property
+    def last_funding_rate_record(self) -> Optional[FundingRateRecord]:
+        return self._funding_rate_deque[-1] if self._funding_rate_deque else None
 
     async def start_network(self):
         await self.stop_network()
@@ -87,143 +94,118 @@ class FundingRateDataFeed(DataFeedBase):
 
     async def _fetch_loop(self):
         try:
-            # Initial population
-            await self._initial_fetch()
-
+            await self._fetch_historical_data()
             while True:
-                now_ms = TimeUtility.now_ms()
-                next_fetch_time_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.interval)
-                sleep_duration = max(0.0, (next_fetch_time_ms - now_ms) / 1000.0)
-
-                self.logger().debug(
-                    f"{self.name}: Sleeping for {sleep_duration:.2f}s until next fetch at {TimeUtility.ms_to_datetime(next_fetch_time_ms)}"
-                )
-                await self._sleep(sleep_duration)
-
-                try:
-                    await self._fetch_live_data()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    self.logger().error(f"Error fetching live funding rate data for {self.name}: {e}", exc_info=True)
-                    # Wait before retrying to avoid spamming logs/API
-                    await self._sleep(DEFAULT_TIMEOUT)
-
+                await self._wait_for_next_fetch()
+                await self._fetch_live_data_loop()
         except asyncio.CancelledError:
-            self.logger().info(f"Fetch loop cancelled for {self.name}.")
+            self.logger().info(f"Cancelling fetch loop for {self.name}...")
         except Exception as e:
             self.logger().critical(f"Unexpected error in fetch loop for {self.name}: {e}", exc_info=True)
         finally:
             self.logger().info(f"Fetch loop finished for {self.name}.")
-            self._data_ready_event.clear()  # Mark data as not ready if loop stops
+            self._data_ready_event.clear()
 
-    async def _initial_fetch(self):
-        self.logger().info(f"Performing initial data fetch for {self.name}...")
-        # 1. Try loading from DB first
-        # db_records = self._db.get_historical_records(
-        #     provider=self._provider.PROVIDER_NAME, symbol=self._config.trading_pair, limit=self._config.window
-        # )
-        # if db_records:
-        #     self._funding_rate_deque.extend(db_records)
-        #     self.logger().info(f"Loaded {len(db_records)} records from DB for {self.name}.")
+    async def _wait_for_next_fetch(self):
+        now_ms = TimeUtility.now_ms()
+        next_fetch_time_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.interval)
+        sleep_duration = max(0.0, (next_fetch_time_ms - now_ms) / 1000.0)
+        await asyncio.sleep(sleep_duration)
 
-        # 2. Fetch from API if DB is empty or doesn't have enough data
-        if len(self._funding_rate_deque) < self._config.window:
-            needed = self._config.window - len(self._funding_rate_deque)
-            self.logger().info(f"Fetching {needed} historical records from API for {self.name}...")
-            try:
-                fetch_limit = min(needed + 5, BINANCE_FUNDING_RATE_COUNT_LIMIT)
-                api_records = await self._provider.fetch_funding_rate(limit=fetch_limit)
+    async def _try_fetch_api(self, limit: int) -> list[FundingRateRecord]:
+        try:
+            return await self._provider.fetch_funding_rate(limit=limit)
+        except Exception as e:
+            self.logger().error(f"Error fetching data from API for {self.name}: {e}", exc_info=True)
+            return []
 
-                if api_records:
-                    merged_records = self._merge_and_sort_records(list(self._funding_rate_deque), api_records)
-                    self._funding_rate_deque.clear()
-                    self._funding_rate_deque.extend(merged_records)
-                    self._db.insert_records(merged_records)
-                    self.logger().info(f"Saved {len(merged_records)} new records to DB for {self.name}.")
-                else:
-                    self.logger().warning(f"API returned no historical records for {self.name}.")
+    async def _fetch_historical_data(self):
+        fetch_count = min(self.deque_size, BINANCE_FUNDING_RATE_COUNT_LIMIT)
+        self.logger().info(f"Fetching {fetch_count} historical records from API for {self.name}...")
+        api_records = await self._try_fetch_api(limit=fetch_count)
 
-            except Exception as e:
-                self.logger().error(f"Error fetching historical data for {self.name}: {e}", exc_info=True)
-                # Continue even if historical fetch fails, live data might work
+        if api_records:
+            self._funding_rate_deque.extend(api_records)
+            self._update_zscores_for_range(0, len(self._funding_rate_deque))
+        else:
+            self.logger().warning(f"API returned no historical records for {self.name}.")
 
-        if (
-            len(self._funding_rate_deque) >= self._config.window // 2
-        ):  # Consider ready if we have at least half the window
-            self._calculate_zscore()  # Calculate initial z-score
+        if len(self._funding_rate_deque) >= self.window:  # Check readiness based on window size
             self._data_ready_event.set()
             self._last_update_ms = TimeUtility.now_ms()
             self.logger().info(f"{self.name} is ready with {len(self._funding_rate_deque)} records.")
         else:
             self.logger().warning(
-                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self._config.window}). Will retry on next interval."
+                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.window}). Will retry on next interval."
             )
 
-    def _merge_and_sort_records(
-        self, existing: List[FundingRateRecord], new: List[FundingRateRecord]
-    ) -> List[FundingRateRecord]:
-        """Merges two lists of records, ensuring uniqueness by funding_time and sorting."""
-        record_map: Dict[int, FundingRateRecord] = {r.funding_time: r for r in existing}
-        for r in new:
-            record_map[r.funding_time] = r  # Overwrite existing if new data for same timestamp exists
-        # Sort by funding_time ascending and return
-        return sorted(record_map.values(), key=lambda r: r.funding_time)
+    async def _fetch_live_data_loop(self):
+        while True:
+            latest_api_records = await self._try_fetch_api(limit=3)
+            if not latest_api_records:
+                self.logger().warning(f"New funding rate data not yet available for {self.name}. Retrying in 1s.")
+                await asyncio.sleep(1.0)
+                continue
 
-    async def _fetch_live_data(self):
-        self.logger().debug(f"Fetching live funding rate for {self.name}...")
-        try:
-            # Fetch the latest record (limit=1 might return the *last* known, not necessarily *new*)
-            # Fetch a few records to be safe and find the actual latest one not already in deque
-            fetch_limit = 3
-            latest_records = await self._provider.fetch_funding_rate(limit=fetch_limit)
-
-            if not latest_records:
-                self.logger().warning(f"API returned no live records for {self.name}.")
-                return
-
-            last_known_time = self._funding_rate_deque[-1].funding_time if self._funding_rate_deque else 0
-            new_records = [r for r in latest_records if r.funding_time > last_known_time]
-
-            if new_records:
-                # Sort new records just in case API doesn't guarantee order
-                new_records.sort(key=lambda r: r.funding_time)
-                self._funding_rate_deque.extend(new_records)
-                self._calculate_zscore()  # Recalculate z-score with new data
-                self._db.insert_records(new_records)  # Save new records
+            newest_api_record = latest_api_records[0]
+            last_deque_record = self.last_funding_rate_record
+            if last_deque_record is None or newest_api_record.funding_time > last_deque_record.funding_time:
+                self._funding_rate_deque.append(newest_api_record)
+                update_start_index = len(self._funding_rate_deque) - 1
+                self._update_zscores_for_range(update_start_index, len(self._funding_rate_deque))
                 self._last_update_ms = TimeUtility.now_ms()
                 self.logger().info(
-                    f"Fetched {len(new_records)} new funding rate records for {self.name}. Last z-score: {self.get_last_zscore():.4f}"
+                    f"New funding rate data added for {self.name}, "
+                    f"funding time: {TimeUtility.ms_to_datetime(newest_api_record.funding_time)}"
                 )
-                if not self.is_ready and len(self._funding_rate_deque) >= self._config.window // 2:
-                    self._data_ready_event.set()
-                    self.logger().info(f"{self.name} is now ready.")
+                break
+
             else:
-                self.logger().debug(f"No new funding rate data found for {self.name}.")
+                self.logger().info(f"New funding rate data not yet available for {self.name}. Retrying in 1s.")
+                await asyncio.sleep(1.0)
 
-        except Exception as e:
-            self.logger().error(f"Error fetching live funding rate data for {self.name}: {e}", exc_info=True)
+    def get_last_zscore(self) -> Optional[float]:
+        if not self._funding_rate_deque:
+            return None
+        return self._funding_rate_deque[-1].zscore
 
-    def _calculate_zscore(self):
-        if len(self._funding_rate_deque) < 2:
-            # Need at least 2 points to calculate mean/stddev
-            if self._funding_rate_deque:
-                self._funding_rate_deque[-1].zscore = None  # Ensure zscore is None if calculation not possible
-            return
+    def get_zscore(self, records: List[FundingRateRecord]) -> float:
+        if len(records) < 2:
+            raise ValueError("Not enough records to calculate z-score")
 
-        rates = [record.funding_rate for record in self._funding_rate_deque]
+        rates = [record.funding_rate for record in records]
         mean = statistics.mean(rates)
         try:
             stdev = statistics.stdev(rates)
-        except statistics.StatisticsError:  # Happens if all values are the same
-            stdev = 0.0
+        except statistics.StatisticsError:
+            self.logger().warning(f"Stdev is 0 when calculating z-score from {len(records)} records, return 0.")
+            return 0.0
 
-        last_record = self._funding_rate_deque[-1]
-        if stdev == 0.0:
-            # Avoid division by zero; z-score is 0 if std dev is 0
-            last_record.zscore = 0.0
-        else:
-            last_record.zscore = (last_record.funding_rate - mean) / stdev
+        last_rate = records[-1].funding_rate
+        return (last_rate - mean) / stdev
+
+    def _update_zscores_for_range(self, start_index: int, end_index: int):
+        for i in range(start_index, end_index):
+            # update if record i has enough of past records and its zscore is not set
+            if i >= self.window - 1 and self._funding_rate_deque[i].zscore is None:
+                _start_idx = i - self.window + 1
+                _end_idx = i + 1
+                window_slice = list(self._funding_rate_deque)[_start_idx:_end_idx]
+                zscore = self.get_zscore(window_slice)
+                self._funding_rate_deque[i].zscore = zscore
+
+    def is_updated(self) -> bool:
+        if not self.ready:
+            return False
+
+        last_aligned_timestamp_ms = IntervalUtility.align_timestamp(TimeUtility.now_ms(), self._config.interval)
+        last_record = self.last_funding_rate_record
+        if last_record is None:
+            self.logger().warning(
+                f"No funding rate data available for {self.name} when checking if the data feed is updated"
+            )
+            return False
+        return last_record.aligned_funding_time == last_aligned_timestamp_ms
 
     def format_status_records(self, num_records: int) -> List[Tuple[str, Any]]:
         recent_records = self.funding_rate_records[-num_records:]
@@ -240,20 +222,19 @@ class FundingRateDataFeed(DataFeedBase):
         lines.append(f"Data Feed: {self.name}")
         lines.append(f"  Trading Pair: {self._config.trading_pair}")
         lines.append(f"  Interval: {self._config.interval}")
-        lines.append(f"  Window: {self._config.window}")
+        lines.append(f"  Window: {self.window}")
         lines.append(f"  Status: {'Ready' if self.ready else 'Initializing'}")
         lines.append(f"  Records in Deque: {len(self._funding_rate_deque)}")
 
-        last_record = self.get_last_funding_rate_record()
+        last_record = self.last_funding_rate_record
         if last_record:
             last_update_dt = TimeUtility.ms_to_datetime(self._last_update_ms)
             last_funding_dt = TimeUtility.ms_to_datetime(last_record.funding_time)
+            last_zscore = self.get_last_zscore()
             lines.append(f"  Last Update: {last_update_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
             lines.append(f"  Last Funding Time: {last_funding_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
             lines.append(f"  Last Funding Rate: {last_record.funding_rate:.8f}")
-            lines.append(
-                f"  Last Z-Score: {last_record.zscore:.4f}" if last_record.zscore is not None else "  Last Z-Score: N/A"
-            )
+            lines.append(f"  Last Z-Score: {last_zscore:.4f}" if last_zscore is not None else "  Last Z-Score: N/A")
         else:
             lines.append("  No funding rate data available yet.")
 
