@@ -45,7 +45,6 @@ class FundingRateDataFeed(DataFeedBase):
         self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self.deque_size)
         self._fetch_task: Optional[asyncio.Task] = None
         self._data_ready_event: asyncio.Event = asyncio.Event()
-        self._last_update_ms: int = 0
 
     @property
     def name(self) -> str:
@@ -132,7 +131,6 @@ class FundingRateDataFeed(DataFeedBase):
 
         if len(self._funding_rate_deque) >= self.window:  # Check readiness based on window size
             self._data_ready_event.set()
-            self._last_update_ms = TimeUtility.now_ms()
             self.logger().info(f"{self.name} is ready with {len(self._funding_rate_deque)} records.")
         else:
             self.logger().warning(
@@ -153,7 +151,6 @@ class FundingRateDataFeed(DataFeedBase):
                 self._funding_rate_deque.append(newest_api_record)
                 update_start_index = len(self._funding_rate_deque) - 1
                 self._update_zscores_for_range(update_start_index, len(self._funding_rate_deque))
-                self._last_update_ms = TimeUtility.now_ms()
                 self.logger().info(
                     f"New funding rate data added for {self.name}, "
                     f"funding time: {TimeUtility.ms_to_datetime(newest_api_record.funding_time)}"
@@ -219,28 +216,12 @@ class FundingRateDataFeed(DataFeedBase):
 
     def format_status(self) -> str:
         lines = []
-        lines.append(f"Data Feed: {self.name}")
         lines.append(f"  Trading Pair: {self._config.trading_pair}")
         lines.append(f"  Interval: {self._config.interval}")
-        lines.append(f"  Window: {self.window}")
-        lines.append(f"  Status: {'Ready' if self.ready else 'Initializing'}")
-        lines.append(f"  Records in Deque: {len(self._funding_rate_deque)}")
-
-        last_record = self.last_funding_rate_record
-        if last_record:
-            last_update_dt = TimeUtility.ms_to_datetime(self._last_update_ms)
-            last_funding_dt = TimeUtility.ms_to_datetime(last_record.funding_time)
-            last_zscore = self.get_last_zscore()
-            lines.append(f"  Last Update: {last_update_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            lines.append(f"  Last Funding Time: {last_funding_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-            lines.append(f"  Last Funding Rate: {last_record.funding_rate:.8f}")
-            lines.append(f"  Last Z-Score: {last_zscore:.4f}" if last_zscore is not None else "  Last Z-Score: N/A")
-        else:
-            lines.append("  No funding rate data available yet.")
+        lines.append(f"  Window: {self.window}\n\n")
 
         record_lines = self.format_status_records(num_records=5)
         if record_lines:
             lines.append(record_lines[0][0])  # Header
             lines.append(record_lines[0][1])  # Records
-
         return "\n".join(lines)
