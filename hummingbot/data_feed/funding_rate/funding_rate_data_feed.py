@@ -44,7 +44,6 @@ class FundingRateDataFeed(DataFeedBase):
         )
         self._funding_rate_deque: Deque[FundingRateRecord] = deque(maxlen=self.deque_size)
         self._fetch_task: Optional[asyncio.Task] = None
-        self._data_ready_event: asyncio.Event = asyncio.Event()
 
     @property
     def name(self) -> str:
@@ -78,32 +77,29 @@ class FundingRateDataFeed(DataFeedBase):
     async def stop_network(self):
         if self._fetch_task:
             self._fetch_task.cancel()
-            try:
-                await self._fetch_task
-            except asyncio.CancelledError:
-                pass  # Expected
-            except Exception:
-                self.logger().exception(f"Error cancelling fetch loop for {self.name}", exc_info=True)
+            await asyncio.sleep(1.0)
             self._fetch_task = None
-            self.logger().info(f"Stopped fetch loop for {self.name}")
-        self._data_ready_event.clear()
+        self._funding_rate_deque.clear()
 
     async def check_network(self) -> NetworkStatus:
         return NetworkStatus.CONNECTED
 
     async def _fetch_loop(self):
-        try:
+        if not self.ready:
             await self._fetch_historical_data()
-            while True:
+            self._ready_event.set()
+
+        while True:
+            try:
                 await self._wait_for_next_fetch()
                 await self._fetch_live_data_loop()
-        except asyncio.CancelledError:
-            self.logger().info(f"Cancelling fetch loop for {self.name}...")
-        except Exception as e:
-            self.logger().critical(f"Unexpected error in fetch loop for {self.name}: {e}", exc_info=True)
-        finally:
-            self.logger().info(f"Fetch loop finished for {self.name}.")
-            self._data_ready_event.clear()
+
+            except asyncio.CancelledError:
+                self.logger().info(f"Cancelling fetch loop for {self.name}...")
+                raise
+            except Exception as e:
+                self.logger().error(f"Unexpected error in fetch loop for {self.name}: {e}", exc_info=True)
+                await asyncio.sleep(1)
 
     async def _wait_for_next_fetch(self):
         now_ms = TimeUtility.now_ms()
@@ -130,13 +126,13 @@ class FundingRateDataFeed(DataFeedBase):
             self.logger().warning(f"API returned no historical records for {self.name}.")
 
         if len(self._funding_rate_deque) >= self.window:  # Check readiness based on window size
-            self._data_ready_event.set()
             self.logger().info(f"{self.name} is ready with {len(self._funding_rate_deque)} records.")
         else:
             self.logger().warning(
                 f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.window}). Will retry on next interval."
             )
 
+    # TODO: consider the case when previous N records are not available in edge case
     async def _fetch_live_data_loop(self):
         while True:
             latest_api_records = await self._try_fetch_api(limit=3)
