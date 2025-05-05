@@ -216,7 +216,7 @@ class FundingRateDataFeed(DataFeedBase):
         lines.append(f"  Interval: {self._config.interval}")
         lines.append(f"  Window: {self.window}\n\n")
 
-        record_lines = self.format_status_records(num_records=5)
+        record_lines = self.format_status_records(num_records=6)
         if record_lines:
             lines.append(record_lines[0][0])  # Header
             lines.append(record_lines[0][1])  # Records
