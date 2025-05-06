@@ -137,7 +137,8 @@ class FundingRateDataFeed(DataFeedBase):
                 f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.window}). Will retry on next interval."
             )
 
-    # TODO: consider the case when previous N records are not available in edge case
+    # TODO: more robust way to insert live data (e.g. miss N previous records, or missing live record)
+    # add a fallback if new entry still not available after M retries
     async def _fetch_live_data_loop(self):
         while True:
             self.logger().info(f"Fetching live funding rate data for {self.name}...")
@@ -147,7 +148,7 @@ class FundingRateDataFeed(DataFeedBase):
                 await asyncio.sleep(1.0)
                 continue
 
-            newest_api_record = latest_api_records[0]
+            newest_api_record = latest_api_records[-1]
             last_deque_record = self.last_funding_rate_record
             if last_deque_record is None or newest_api_record.funding_time > last_deque_record.funding_time:
                 self._funding_rate_deque.append(newest_api_record)
