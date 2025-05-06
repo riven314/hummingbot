@@ -104,7 +104,12 @@ class FundingRateDataFeed(DataFeedBase):
     async def _wait_for_next_fetch(self):
         now_ms = TimeUtility.now_ms()
         next_fetch_time_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.interval)
-        sleep_duration = max(0.0, (next_fetch_time_ms - now_ms) / 1000.0)
+        sleep_s = (next_fetch_time_ms - now_ms) / 1000.0
+        sleep_duration = max(
+            0.0,
+            sleep_s,
+        )
+        self.logger().info(f"Sleeping for {sleep_duration}s before next fetch for {self.name}...")
         await asyncio.sleep(sleep_duration)
 
     async def _try_fetch_api(self, limit: int) -> list[FundingRateRecord]:
@@ -135,6 +140,7 @@ class FundingRateDataFeed(DataFeedBase):
     # TODO: consider the case when previous N records are not available in edge case
     async def _fetch_live_data_loop(self):
         while True:
+            self.logger().info(f"Fetching live funding rate data for {self.name}...")
             latest_api_records = await self._try_fetch_api(limit=3)
             if not latest_api_records:
                 self.logger().warning(f"New funding rate data not yet available for {self.name}. Retrying in 1s.")
