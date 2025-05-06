@@ -294,10 +294,6 @@ class StrategyV2Base(ScriptStrategyBase):
         self.update_executors_info()
         self.update_controllers_configs()
 
-        for connector_name, connector in self.connectors.items():
-            status_dict = connector.status_dict
-            self.logger().info(f"{connector_name} status dict: {status_dict}")
-
         if self.market_data_provider.ready and not self._is_stop_triggered:
             executor_actions: List[ExecutorAction] = self.determine_executor_actions()
             for action in executor_actions:
