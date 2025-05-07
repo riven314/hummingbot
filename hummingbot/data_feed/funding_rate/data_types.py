@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel, validator
 
@@ -12,7 +12,7 @@ from hummingbot.data_feed.funding_rate.utils.time_utils import TimeUtility
 
 
 class TimestampValidatorMixin:
-    @validator("funding_time", "aligned_funding_time", allow_reuse=True)
+    @validator("funding_time", "aligned_funding_time", "start_time", allow_reuse=True)
     def check_valid_timestamp_ms(cls, v: Any) -> Any:
         if not TimeUtility.is_valid_timestamp_ms(v):
             raise ValueError(f"Invalid millisecond timestamp: {v}")
@@ -72,3 +72,8 @@ class FundingRateRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin
     @property
     def aligned_funding_at(self) -> datetime:
         return TimeUtility.ms_to_datetime(self.aligned_funding_time)
+
+
+class FundingRateInterval(BaseModel):
+    start_time: int
+    zscore: Optional[float] = None

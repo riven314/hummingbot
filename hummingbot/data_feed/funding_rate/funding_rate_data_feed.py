@@ -13,7 +13,7 @@ from hummingbot.data_feed.funding_rate.constants import (
     BINANCE_FUNDING_RATE_COUNT_LIMIT,
     BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL,
 )
-from hummingbot.data_feed.funding_rate.data_types import FundingRateConfig, FundingRateRecord
+from hummingbot.data_feed.funding_rate.data_types import FundingRateConfig, FundingRateInterval, FundingRateRecord
 from hummingbot.data_feed.funding_rate.providers.base import FundingRateProviderBase
 from hummingbot.data_feed.funding_rate.providers.binance_perpetual import BinanceFundingRateProvider
 from hummingbot.data_feed.funding_rate.utils.interval_utils import IntervalUtility
@@ -70,10 +70,6 @@ class FundingRateDataFeed(DataFeedBase):
     @property
     def interval_ms(self) -> int:
         return IntervalUtility.get_duration_ms(self._config.update_interval)
-
-    @property
-    def last_funding_rate_record(self) -> Optional[FundingRateRecord]:
-        return self._funding_rate_deque[-1] if self._funding_rate_deque else None
 
     async def start_network(self):
         await self.stop_network()
@@ -185,6 +181,7 @@ class FundingRateDataFeed(DataFeedBase):
             "exchange",
             "symbol",
             "funding_time",
+            "aligned_funding_time",
             "funding_rate",
             "mark_price",
             "requested_at",
@@ -204,7 +201,8 @@ class FundingRateDataFeed(DataFeedBase):
                 "exchange": r.exchange,
                 "symbol": r.symbol,
                 "funding_time": r.funding_time,
-                "aligned_funding_time": r.aligned_funding_at,
+                "aligned_funding_time": r.aligned_funding_time,
+                "aligned_funding_at": r.aligned_funding_at,
                 "funding_rate": r.funding_rate,
                 "mark_price": r.mark_price,
                 "requested_at": r.requested_at,
@@ -213,7 +211,7 @@ class FundingRateDataFeed(DataFeedBase):
             for r in self._funding_rate_deque
         ]
         df = pd.DataFrame(records_data)
-        df = df.set_index("aligned_funding_time")
+        df = df.set_index("aligned_funding_at")
 
         start_time = df.index.min()
         now_ms = TimeUtility.now_ms()
@@ -250,6 +248,19 @@ class FundingRateDataFeed(DataFeedBase):
             df_resampled["zscore"] = pd.NA
 
         return df_resampled[empty_df_columns]
+
+    @property
+    def funding_rate_intervals(self) -> List[FundingRateInterval]:
+        df: pd.DataFrame = self.get_trading_interval_dataframe()
+        if df.empty:
+            return []
+
+        intervals: List[FundingRateInterval] = []
+        for timestamp_index, row_data in df.iterrows():
+            start_time_ms: int = TimeUtility.datetime_to_ms(timestamp_index.to_pydatetime())
+            z_score_value: Optional[float] = row_data["zscore"] if pd.notna(row_data["zscore"]) else None
+            intervals.append(FundingRateInterval(start_time=start_time_ms, zscore=z_score_value))
+        return intervals
 
     def format_status_records(self, num_records: int) -> List[Tuple[str, Any]]:
         recent_records = self.funding_rate_records[-num_records:]
