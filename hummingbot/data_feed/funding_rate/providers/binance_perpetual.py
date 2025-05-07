@@ -11,7 +11,7 @@ from hummingbot.data_feed.funding_rate.constants import (
     BINANCE_PERPETUAL_BASE_URL,
     BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL,
     DEFAULT_TIMEOUT,
-    IntervalType,
+    FundingRateIntervalType,
 )
 from hummingbot.data_feed.funding_rate.data_types import FundingRateRecord
 from hummingbot.data_feed.funding_rate.providers.base import FundingRateProviderBase, FundingRateProviderError
@@ -81,7 +81,7 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
                 except ValueError:
                     raise FundingRateProviderError(f"Invalid fundingTime string value from Binance API: {data_point}")
 
-    def _validate_data_freshness(self, latest_timestamp: int, interval: IntervalType) -> None:
+    def _validate_data_freshness(self, latest_timestamp: int, interval: FundingRateIntervalType) -> None:
         current_time_ms: int = TimeUtility.now_ms()
         expected_latest_ms: int = IntervalUtility.align_timestamp(current_time_ms, interval)
         latest_aligned_ms: int = IntervalUtility.align_timestamp(latest_timestamp, interval)
@@ -96,7 +96,7 @@ class BinanceFundingRateProvider(FundingRateProviderBase):
             )
 
     def _check_and_fill_missing_data(
-        self, data: List[FundingRateRecord], interval: IntervalType
+        self, data: List[FundingRateRecord], interval: FundingRateIntervalType
     ) -> List[FundingRateRecord]:
         if len(data) <= 1:
             raise FundingRateProviderError("At least 2 data points are required for data validation and filling")

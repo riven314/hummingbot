@@ -1,10 +1,12 @@
 import asyncio
 import logging
-import statistics
+import math
 from collections import deque
 from typing import Any, Deque, List, Optional, Tuple
 
-from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
+import pandas as pd
+
+from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.funding_rate.constants import (
@@ -35,9 +37,9 @@ class FundingRateDataFeed(DataFeedBase):
         super().__init__()
         self._config: FundingRateConfig = config
         expected_interval = BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL[self._config.trading_pair]
-        if self._config.interval != expected_interval:
+        if self._config.update_interval != expected_interval:
             raise ValueError(
-                f"Binance {self._config.trading_pair} expects funding interval to be {expected_interval}, but {self._config.interval} was provided"
+                f"Binance {self._config.trading_pair} expects funding interval to be {expected_interval}, but {self._config.update_interval} was provided"
             )
         self._provider: FundingRateProviderBase = BinanceFundingRateProvider(
             trading_pair=self._config.trading_pair,
@@ -47,10 +49,10 @@ class FundingRateDataFeed(DataFeedBase):
 
     @property
     def name(self) -> str:
-        return f"{self.__class__.__name__}:{self._config.trading_pair}:{self._config.interval}"
+        return f"{self.__class__.__name__}:{self._config.trading_pair}:{self._config.update_interval}:{self._config.trading_interval}"
 
     @property
-    def funding_rate_records(self) -> List[FundingRateRecord]:
+    def funding_rate_records(self) -> list[FundingRateRecord]:
         return list(self._funding_rate_deque)
 
     @property
@@ -59,11 +61,15 @@ class FundingRateDataFeed(DataFeedBase):
 
     @property
     def deque_size(self) -> int:
-        return self.window + 5
+        trading_interval_ms = IntervalUtility.get_duration_ms(self._config.trading_interval)
+        fetch_interval_ms = IntervalUtility.get_duration_ms(self._config.update_interval)
+        window_duration_ms = self._config.window * trading_interval_ms
+        records_needed = math.ceil(window_duration_ms / fetch_interval_ms)
+        return records_needed + 10
 
     @property
     def interval_ms(self) -> int:
-        return IntervalUtility.get_duration_ms(self._config.interval)
+        return IntervalUtility.get_duration_ms(self._config.update_interval)
 
     @property
     def last_funding_rate_record(self) -> Optional[FundingRateRecord]:
@@ -103,7 +109,7 @@ class FundingRateDataFeed(DataFeedBase):
 
     async def _wait_for_next_fetch(self):
         now_ms = TimeUtility.now_ms()
-        next_fetch_time_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.interval)
+        next_fetch_time_ms = IntervalUtility.get_next_interval_timestamp(now_ms, self._config.update_interval)
         sleep_s = (next_fetch_time_ms - now_ms) / 1000.0
         sleep_duration = max(
             0.0,
@@ -126,7 +132,6 @@ class FundingRateDataFeed(DataFeedBase):
 
         if api_records:
             self._funding_rate_deque.extend(api_records)
-            self._update_zscores_for_range(0, len(self._funding_rate_deque))
         else:
             self.logger().warning(f"API returned no historical records for {self.name}.")
 
@@ -152,8 +157,6 @@ class FundingRateDataFeed(DataFeedBase):
             last_deque_record = self.last_funding_rate_record
             if last_deque_record is None or newest_api_record.funding_time > last_deque_record.funding_time:
                 self._funding_rate_deque.append(newest_api_record)
-                update_start_index = len(self._funding_rate_deque) - 1
-                self._update_zscores_for_range(update_start_index, len(self._funding_rate_deque))
                 self.logger().info(
                     f"New funding rate data added for {self.name}, "
                     f"funding time: {TimeUtility.ms_to_datetime(newest_api_record.funding_time)}"
@@ -164,41 +167,11 @@ class FundingRateDataFeed(DataFeedBase):
                 self.logger().info(f"New funding rate data not yet available for {self.name}. Retrying in 1s.")
                 await asyncio.sleep(1.0)
 
-    def get_last_zscore(self) -> Optional[float]:
-        if not self._funding_rate_deque:
-            return None
-        return self._funding_rate_deque[-1].zscore
-
-    def get_zscore(self, records: List[FundingRateRecord]) -> float:
-        if len(records) < 2:
-            raise ValueError("Not enough records to calculate z-score")
-
-        rates = [record.funding_rate for record in records]
-        mean = statistics.mean(rates)
-        try:
-            stdev = statistics.stdev(rates)
-        except statistics.StatisticsError:
-            self.logger().warning(f"Stdev is 0 when calculating z-score from {len(records)} records, return 0.")
-            return 0.0
-
-        last_rate = records[-1].funding_rate
-        return (last_rate - mean) / stdev
-
-    def _update_zscores_for_range(self, start_index: int, end_index: int):
-        for i in range(start_index, end_index):
-            # update if record i has enough of past records and its zscore is not set
-            if i >= self.window - 1 and self._funding_rate_deque[i].zscore is None:
-                _start_idx = i - self.window + 1
-                _end_idx = i + 1
-                window_slice = list(self._funding_rate_deque)[_start_idx:_end_idx]
-                zscore = self.get_zscore(window_slice)
-                self._funding_rate_deque[i].zscore = zscore
-
     def is_updated(self) -> bool:
         if not self.ready:
             return False
 
-        last_aligned_timestamp_ms = IntervalUtility.align_timestamp(TimeUtility.now_ms(), self._config.interval)
+        last_aligned_timestamp_ms = IntervalUtility.align_timestamp(TimeUtility.now_ms(), self._config.update_interval)
         last_record = self.last_funding_rate_record
         if last_record is None:
             self.logger().warning(
@@ -207,24 +180,119 @@ class FundingRateDataFeed(DataFeedBase):
             return False
         return last_record.aligned_funding_time == last_aligned_timestamp_ms
 
+    def get_trading_interval_dataframe(self) -> pd.DataFrame:
+        empty_df_columns = [
+            "exchange",
+            "symbol",
+            "funding_time",
+            "funding_rate",
+            "mark_price",
+            "requested_at",
+            "is_estimated",
+            "zscore",
+        ]
+        empty_df_index = pd.DatetimeIndex([])
+
+        if not self._funding_rate_deque:
+            self.logger().warning(
+                "No funding rate data available when getting trading interval DataFrame, returning empty DataFrame"
+            )
+            return pd.DataFrame(columns=empty_df_columns).set_index(empty_df_index)
+
+        records_data = [
+            {
+                "exchange": r.exchange,
+                "symbol": r.symbol,
+                "funding_time": r.funding_time,
+                "aligned_funding_time": r.aligned_funding_at,
+                "funding_rate": r.funding_rate,
+                "mark_price": r.mark_price,
+                "requested_at": r.requested_at,
+                "is_estimated": r.is_estimated,
+            }
+            for r in self._funding_rate_deque
+        ]
+        df = pd.DataFrame(records_data)
+        df = df.set_index("aligned_funding_time")
+
+        start_time = df.index.min()
+        now_ms = TimeUtility.now_ms()
+        nearest_past_hour_start_ms = IntervalUtility.get_previous_interval_timestamp(
+            now_ms, self._config.trading_interval
+        )
+        end_time = TimeUtility.ms_to_datetime(nearest_past_hour_start_ms)
+
+        hourly_index = pd.date_range(start=start_time, end=end_time, freq=self._config.trading_interval)
+        if hourly_index.empty:
+            self.logger().warning(f"hourly_index is empty from {start_time} to {end_time}, returning empty DataFrame")
+            return pd.DataFrame(columns=empty_df_columns).set_index(empty_df_index)
+
+        # reindex and forward fill
+        # ensure all original indices plus the new hourly_index are considered, then select only hourly_index
+        combined_index = df.index.union(hourly_index).sort_values()
+        df_resampled = df.reindex(combined_index)
+        df_resampled = df_resampled.ffill()
+        df_resampled = df_resampled.loc[hourly_index]
+        # should not be necessary if hourly_index is unique
+        df_resampled = df_resampled[~df_resampled.index.duplicated(keep="first")]
+        # set index to be the start timestamp of the trading interval
+        df_resampled.index = df_resampled.index - pd.Timedelta(self._config.trading_interval)
+
+        # calculate Z-score
+        if len(df_resampled) >= self.window:
+            rolling_mean = df_resampled["funding_rate"].rolling(window=self.window).mean()
+            rolling_std = df_resampled["funding_rate"].rolling(window=self.window).std()
+            df_resampled["zscore"] = (df_resampled["funding_rate"] - rolling_mean) / rolling_std
+        else:
+            self.logger().warning(
+                f"Not enough data ({len(df_resampled)}) to calculate Z-score of window size {self.window}, returning empty DataFrame"
+            )
+            df_resampled["zscore"] = pd.NA
+
+        return df_resampled[empty_df_columns]
+
     def format_status_records(self, num_records: int) -> List[Tuple[str, Any]]:
         recent_records = self.funding_rate_records[-num_records:]
         formatted = []
         for record in recent_records:
             ts = TimeUtility.ms_to_datetime(record.funding_time).strftime("%Y-%m-%d %H:%M:%S")
             rate_str = f"{record.funding_rate:.8f}"
-            zscore_str = f"{record.zscore:.4f}" if record.zscore is not None else "N/A"
-            formatted.append(f"  {ts} | Rate: {rate_str} | Z-Score: {zscore_str}")
+            formatted.append(f"  {ts} | Rate: {rate_str}")
         return [("Recent Funding Rates:", "\n".join(formatted))] if formatted else []
 
+    def format_status_dataframe(self, num_records: int) -> list[tuple[str, Any]]:
+        df = self.get_trading_interval_dataframe()
+        if df.empty:
+            return []
+
+        formatted_lines = []
+        df = df.tail(num_records)
+        for timestamp, row in df.iterrows():
+            ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            rate_str = f"{row['funding_rate']:.8f}"
+            zscore_str = f"{row['zscore']:.4f}" if pd.notna(row["zscore"]) else "N/A"
+            formatted_lines.append(f"  {ts_str} | Rate: {rate_str} | ZScore: {zscore_str}")
+        return [("Recent Hours Statistics:", "\n".join(formatted_lines))]
+
     def format_status(self) -> str:
+        if not self.ready:
+            return "  FundingRateDataFeed is not ready yet..."
+
         lines = []
         lines.append(f"  Trading Pair: {self._config.trading_pair}")
-        lines.append(f"  Interval: {self._config.interval}")
+        lines.append(f"  Interval: {self._config.update_interval}")
+        lines.append(f"  Trading Interval: {self._config.trading_interval}")
         lines.append(f"  Window: {self.window}\n\n")
 
-        record_lines = self.format_status_records(num_records=6)
+        record_lines = self.format_status_records(num_records=4)
         if record_lines:
             lines.append(record_lines[0][0])  # Header
             lines.append(record_lines[0][1])  # Records
+
+        lines.append("\n\n")
+        dataframe_lines = self.format_status_dataframe(num_records=16)
+        if dataframe_lines:
+            lines.append(dataframe_lines[0][0])  # Header
+            lines.append(dataframe_lines[0][1])  # DataFrame
+
         return "\n".join(lines)
