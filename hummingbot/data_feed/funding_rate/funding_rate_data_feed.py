@@ -259,7 +259,20 @@ class FundingRateDataFeed(DataFeedBase):
         for timestamp_index, row_data in df.iterrows():
             start_time_ms: int = TimeUtility.datetime_to_ms(timestamp_index.to_pydatetime())
             z_score_value: Optional[float] = row_data["zscore"] if pd.notna(row_data["zscore"]) else None
-            intervals.append(FundingRateInterval(start_time=start_time_ms, zscore=z_score_value))
+            intervals.append(
+                FundingRateInterval(
+                    start_time=start_time_ms,
+                    zscore=z_score_value,
+                    funding_rate=row_data["funding_rate"],
+                    mark_price=row_data["mark_price"],
+                    exchange=row_data["exchange"],
+                    symbol=row_data["symbol"],
+                    funding_time=row_data["funding_time"],
+                    aligned_funding_time=row_data["aligned_funding_time"],
+                    requested_at=row_data["requested_at"],
+                    is_estimated=row_data["is_estimated"],
+                )
+            )
         return intervals
 
     @property
