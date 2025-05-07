@@ -262,6 +262,11 @@ class FundingRateDataFeed(DataFeedBase):
             intervals.append(FundingRateInterval(start_time=start_time_ms, zscore=z_score_value))
         return intervals
 
+    @property
+    def last_funding_rate_interval(self) -> Optional[FundingRateInterval]:
+        intervals = self.funding_rate_intervals
+        return intervals[-1] if intervals else None
+
     def format_status_records(self, num_records: int) -> List[Tuple[str, Any]]:
         recent_records = self.funding_rate_records[-num_records:]
         formatted = []

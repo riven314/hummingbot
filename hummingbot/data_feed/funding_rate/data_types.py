@@ -74,6 +74,6 @@ class FundingRateRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin
         return TimeUtility.ms_to_datetime(self.aligned_funding_time)
 
 
-class FundingRateInterval(BaseModel):
+class FundingRateInterval(FundingRateRecord):
     start_time: int
     zscore: Optional[float] = None
