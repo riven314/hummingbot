@@ -4,9 +4,9 @@ import math
 from collections import deque
 from typing import Any, Deque, List, Optional, Tuple
 
-import pandas as pd
+import pandas as pd  # type: ignore
 
-from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.funding_rate.constants import (
@@ -167,14 +167,16 @@ class FundingRateDataFeed(DataFeedBase):
         if not self.ready:
             return False
 
-        last_aligned_timestamp_ms = IntervalUtility.align_timestamp(TimeUtility.now_ms(), self._config.update_interval)
-        last_record = self.last_funding_rate_record
+        last_aligned_timestamp_ms = IntervalUtility.get_previous_interval_timestamp(
+            TimeUtility.now_ms(), self._config.trading_interval
+        )
+        last_record = self.last_funding_rate_interval
         if last_record is None:
             self.logger().warning(
                 f"No funding rate data available for {self.name} when checking if the data feed is updated"
             )
             return False
-        return last_record.aligned_funding_time == last_aligned_timestamp_ms
+        return last_record.start_time == last_aligned_timestamp_ms
 
     def get_trading_interval_dataframe(self) -> pd.DataFrame:
         empty_df_columns = [
