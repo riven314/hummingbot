@@ -154,11 +154,5 @@ class FundingRateDatabase:
 
     def close(self):
         if self._conn:
-            try:
-                self._conn.close()
-                self.logger().info("FundingRate database connection closed.")
-                self._conn = None
-                if FundingRateDatabase._shared_instance is self:
-                    FundingRateDatabase._shared_instance = None
-            except sqlite3.Error as e:
-                self.logger().error(f"Error closing database connection: {e}", exc_info=True)
+            self._conn.close()
+            self._conn = None
