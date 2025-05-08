@@ -30,6 +30,7 @@ class SymbolValidatorMixin:
 
 
 class FundingRateConfig(BaseModel, SymbolValidatorMixin):
+    # not separated by hyphen, e.g. BTCUSDT, ETHUSDT
     trading_pair: str
     update_interval: FundingRateIntervalType
     trading_interval: TradingIntervalType

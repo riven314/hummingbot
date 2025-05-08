@@ -319,7 +319,7 @@ class FundingRateDataFeed(DataFeedBase):
             lines.append(record_lines[0][1])  # Records
 
         lines.append("\n\n")
-        dataframe_lines = self.format_status_dataframe(num_records=16)
+        dataframe_lines = self.format_status_dataframe(num_records=9)
         if dataframe_lines:
             lines.append(dataframe_lines[0][0])  # Header
             lines.append(dataframe_lines[0][1])  # DataFrame
