@@ -10,13 +10,6 @@ from hummingbot.logger import HummingbotLogger
 
 class FundingRateDatabase:
     _logger: Optional[HummingbotLogger] = None
-    _shared_instance: Optional["FundingRateDatabase"] = None
-
-    @classmethod
-    def get_instance(cls, db_path: Path) -> "FundingRateDatabase":
-        if cls._shared_instance is None:
-            cls._shared_instance = FundingRateDatabase(db_path)
-        return cls._shared_instance
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -111,7 +104,7 @@ class FundingRateDatabase:
         except sqlite3.Error as e:
             self.logger().error(f"Error inserting funding rate records: {e}", exc_info=True)
 
-    def get_last_start_time(self, exchange: str, symbol: str) -> Optional[int]:
+    def get_last_start_time(self, exchange: str, symbol: str) -> int:
         if not self._conn:
             raise ConnectionError("Database connection is not available.")
         try:
@@ -127,10 +120,10 @@ class FundingRateDatabase:
                 (exchange, symbol),
             )
             result = cursor.fetchone()
-            return result["last_ts"] if result and result["last_ts"] is not None else None
+            return result["last_ts"] if result and result["last_ts"] is not None else 0
         except sqlite3.Error as e:
             self.logger().error(f"Error fetching last start_time for {exchange} {symbol}: {e}", exc_info=True)
-            return None
+            return 0
 
     def get_historical_records(self, exchange: str, symbol: str, limit: int) -> List[FundingRateInterval]:
         if not self._conn:
