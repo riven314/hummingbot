@@ -30,12 +30,18 @@ class IntervalUtility:
         return aligned_timestamp + interval_ms
 
     @staticmethod
-    def get_previous_interval_timestamp(
-        current_timestamp_ms: int, interval: FundingRateIntervalType | TradingIntervalType
+    def get_last_interval_start_timestamp(
+        timestamp_ms: int, interval: FundingRateIntervalType | TradingIntervalType
     ) -> int:
-        interval_ms: int = IntervalUtility.get_duration_ms(interval)
-        aligned_timestamp: int = IntervalUtility.align_timestamp(current_timestamp_ms, interval)
-        # If current time is exactly on the interval boundary, return the previous one
-        if current_timestamp_ms == aligned_timestamp:
-            return aligned_timestamp - interval_ms
-        return aligned_timestamp
+        """
+        Get last interval start timestamp
+        Example:
+            If current time is 2024-01-01 14:35:00 and interval is "1h":
+            - last interval start timestamp is 13:00:00
+
+            If current time is 2024-01-01 14:35:00 and interval is "15m":
+            - last interval start timestamp is 14:15:00
+        """
+        interval_ms = IntervalUtility.get_duration_ms(interval)
+        aligned = IntervalUtility.align_timestamp(timestamp_ms, interval)
+        return aligned - interval_ms

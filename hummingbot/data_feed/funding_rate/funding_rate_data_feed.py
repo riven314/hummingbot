@@ -167,7 +167,7 @@ class FundingRateDataFeed(DataFeedBase):
         if not self.ready:
             return False
 
-        last_aligned_timestamp_ms = IntervalUtility.get_previous_interval_timestamp(
+        last_interval_start_timestamp = IntervalUtility.get_last_interval_start_timestamp(
             TimeUtility.now_ms(), self._config.trading_interval
         )
         last_record = self.last_funding_rate_interval
@@ -176,7 +176,7 @@ class FundingRateDataFeed(DataFeedBase):
                 f"No funding rate data available for {self.name} when checking if the data feed is updated"
             )
             return False
-        return last_record.start_time == last_aligned_timestamp_ms
+        return last_record.start_time == last_interval_start_timestamp
 
     def get_trading_interval_dataframe(self) -> pd.DataFrame:
         empty_df_columns = [
@@ -217,10 +217,8 @@ class FundingRateDataFeed(DataFeedBase):
 
         start_time = df.index.min()
         now_ms = TimeUtility.now_ms()
-        nearest_past_hour_start_ms = IntervalUtility.get_previous_interval_timestamp(
-            now_ms, self._config.trading_interval
-        )
-        end_time = TimeUtility.ms_to_datetime(nearest_past_hour_start_ms)
+        nearest_past_hour_ms = IntervalUtility.align_timestamp(now_ms, self._config.trading_interval)
+        end_time = TimeUtility.ms_to_datetime(nearest_past_hour_ms)
 
         hourly_index = pd.date_range(start=start_time, end=end_time, freq=self._config.trading_interval)
         if hourly_index.empty:
