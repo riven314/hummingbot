@@ -56,6 +56,10 @@ class FundingRateDataFeed(DataFeedBase):
         return list(self._funding_rate_deque)
 
     @property
+    def last_funding_rate_record(self) -> Optional[FundingRateRecord]:
+        return self._funding_rate_deque[-1] if len(self._funding_rate_deque) > 0 else None
+
+    @property
     def window(self) -> int:
         return self._config.window
 
