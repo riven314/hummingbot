@@ -28,6 +28,11 @@ class FundingRateDatabase:
         try:
             self._conn = sqlite3.connect(self._db_path, isolation_level=None)  # Autocommit mode
             self._conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
+
+            # set WAL journal mode to improve write performance
+            cursor = self._conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+
             self.logger().info(f"Connected to FundingRate database: {self._db_path}")
         except sqlite3.Error as e:
             self.logger().error(f"Error connecting to database {self._db_path}: {e}", exc_info=True)
