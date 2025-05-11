@@ -2,11 +2,11 @@ import asyncio
 import logging
 import math
 from collections import deque
-from typing import Any, Deque, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
-import pandas as pd  # type: ignore
+import pandas as pd
 
-from hummingbot.core.network_iterator import NetworkStatus  # type: ignore
+from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.data_feed_base import DataFeedBase
 from hummingbot.data_feed.funding_rate.constants import (
@@ -22,7 +22,16 @@ from hummingbot.logger import HummingbotLogger
 
 
 class FundingRateDataFeed(DataFeedBase):
+    _instances: Dict[Tuple[str, str], "FundingRateDataFeed"] = {}
     _logger: Optional[HummingbotLogger] = None
+
+    @classmethod
+    def get_instance(cls, exchange: str, trading_pair: str, config: FundingRateConfig) -> "FundingRateDataFeed":
+        key = (exchange, trading_pair)
+        if key not in cls._instances:
+            cls._instances[key] = cls(config=config)
+            cls.logger().info(f"Created new FundingRateDataFeed instance for {key} with window: {config.window}")
+        return cls._instances[key]
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -36,10 +45,14 @@ class FundingRateDataFeed(DataFeedBase):
     ):
         super().__init__()
         self._config: FundingRateConfig = config
-        expected_interval = BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL[self._config.trading_pair]
+        expected_interval = BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL.get(self._config.trading_pair)
+        if not expected_interval:
+            raise ValueError(
+                f"Trading pair {self._config.trading_pair} not found in BINANCE_TRADING_PAIR_TO_FUNDING_INTERVAL."
+            )
         if self._config.update_interval != expected_interval:
             raise ValueError(
-                f"Binance {self._config.trading_pair} expects funding interval to be {expected_interval}, but {self._config.update_interval} was provided"
+                f"Binance {self._config.trading_pair} expects funding interval {expected_interval}, got {self._config.update_interval}"
             )
         self._provider: FundingRateProviderBase = BinanceFundingRateProvider(
             trading_pair=self._config.trading_pair,
