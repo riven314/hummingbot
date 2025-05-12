@@ -25,7 +25,9 @@ class PositionDirection(str, Enum):
 
 
 class FundingRateControllerConfig(ControllerConfigBase):
-    controller_type = "funding_rate_mean_reversion"
+    # controller type follows its parent class, controller name follows its file name
+    controller_type = "generic"
+    controller_name = "funding_rate"
     exchange: str = Field(
         client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Enter the exchange name"),
     )
