@@ -1,22 +1,20 @@
 import asyncio
 from decimal import Decimal
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 import pandas as pd
 from pydantic import Field
 
 from hummingbot.client.config.config_data_types import ClientFieldData
 from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
+from hummingbot.data_feed.funding_rate.constants import TradingIntervalType
 from hummingbot.data_feed.funding_rate.data_types import FundingRateInterval
 from hummingbot.data_feed.funding_rate.funding_rate_data_feed import FundingRateDataFeed
 from hummingbot.data_feed.funding_rate.utils.interval_utils import IntervalUtility
 from hummingbot.data_feed.funding_rate.utils.time_utils import TimeUtility
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
-from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
-    DirectionalTradingControllerBase,
-    DirectionalTradingControllerConfigBase,
-)
+from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 
@@ -26,13 +24,17 @@ class PositionDirection(str, Enum):
     SHORT = "short"
 
 
-class FundingRateControllerConfig(DirectionalTradingControllerConfigBase):
+class FundingRateControllerConfig(ControllerConfigBase):
     controller_type = "funding_rate_mean_reversion"
     exchange: str = Field(
         client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Enter the exchange name"),
     )
     trading_pair: str = Field(
         default="BTC-USDT", client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Enter the trading pair")
+    )
+    candle_interval: TradingIntervalType = Field(
+        default="1h",
+        client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Enter the candle interval (e.g. 1h)"),
     )
     position_direction: PositionDirection = Field(
         client_data=ClientFieldData(
@@ -73,6 +75,11 @@ class FundingRateControllerConfig(DirectionalTradingControllerConfigBase):
             prompt_on_new=True, prompt=lambda mi: "Enter the SMA window size for exit (leave empty for no SMA check)"
         ),
     )
+    leverage: int = Field(
+        default=1,
+        gt=0,
+        client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Leverage (e.g. 10 for 10x)"),
+    )
 
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
@@ -83,7 +90,7 @@ class FundingRateControllerConfig(DirectionalTradingControllerConfigBase):
         )
 
 
-class FundingRateController(DirectionalTradingControllerBase):
+class FundingRateController(ControllerBase):
     def __init__(
         self,
         config: FundingRateControllerConfig,
@@ -96,6 +103,30 @@ class FundingRateController(DirectionalTradingControllerBase):
 
     def set_funding_rate_feed(self, feed: FundingRateDataFeed):
         self._funding_rate_feed = feed
+
+    def determine_executor_actions(self) -> list[ExecutorAction]:
+        actions: list[ExecutorAction] = []
+        actions.extend(self.create_actions_proposal())
+        actions.extend(self.stop_actions_proposal())
+        # actions.extend(self.store_actions_proposal())
+        return actions
+
+    def get_available_balance(self, asset: str) -> Decimal:
+        connector = self.market_data_provider.get_connector(self.config.exchange)
+        return connector.get_available_balance(asset)
+
+    def notify_hb_app(self, msg: str):
+        from hummingbot.client.hummingbot_application import HummingbotApplication
+
+        HummingbotApplication.main_application().notify(msg)
+
+    def notify_hb_app_with_timestamp(self, msg: str):
+        timestamp = pd.Timestamp.fromtimestamp(self.current_timestamp)
+        self.notify_hb_app(f"({timestamp}) {msg}")
+
+    @property
+    def current_timestamp(self) -> float:
+        return self.market_data_provider.time()
 
     @property
     def active_position(self) -> Optional[dict[str, Any]]:
@@ -133,132 +164,238 @@ class FundingRateController(DirectionalTradingControllerBase):
             max_records = (self.config.exit_sma_window or 0) + 10
 
         candles_df = self.market_data_provider.get_candles_df(
-            connector_name=self.config.connector_name,
+            connector_name=self.config.exchange,
             trading_pair=self.config.trading_pair,
             interval=self.config.candle_interval,
             max_records=max_records,
         )
         return candles_df
 
-    def get_last_close_price_value(self) -> Optional[Decimal]:
+    def get_candle_data(self, max_records: int) -> pd.DataFrame:
+        candles_df = self.market_data_provider.get_candles_df(
+            connector_name=self.config.exchange,
+            trading_pair=self.config.trading_pair,
+            interval=self.config.candle_interval,
+            max_records=max_records,
+        )
+        return candles_df
+
+    def get_last_close_price(self) -> Optional[Decimal]:
         candles_df = self.get_candle_df()
         if len(candles_df) < 2:
+            self.logger().warning("Not enough candle data to get last close price.")
             return None
-        return Decimal(str(candles_df.iloc[-2]["close"]))
+        last_completed_candle = candles_df.iloc[-2]
+        return Decimal(str(last_completed_candle["close"]))
 
-    def get_last_sma_value(self, window: int) -> Optional[Decimal]:
+    def get_last_sma(self, window: int) -> Optional[Decimal]:
         candles_df = self.get_candle_df()
         if len(candles_df) < window + 1:
+            self.logger().warning(
+                f"Not enough candle data ({len(candles_df)}) for SMA window {window} to calculate for previous candle."
+            )
             return None
         sma = candles_df["close"].rolling(window=window).mean()
         return Decimal(str(sma.iloc[-2]))
 
-    def get_last_zscore_value(self) -> Optional[Decimal]:
-        if not self._funding_rate_feed:
+    def get_last_zscore(self) -> Optional[Decimal]:
+        if not self._funding_rate_feed or not self._funding_rate_feed.is_updated():
+            self.logger().warning("FundingRateDataFeed is not updated, return None for last zscore value")
             return None
 
-        # Option 1: Use z-score from feed if window matches
-        if self._funding_rate_feed.window == self.config.zscore_window:
-            last_interval_data: Optional[FundingRateInterval] = self._funding_rate_feed.last_funding_rate_interval
-            if last_interval_data and last_interval_data.zscore is not None:
-                return Decimal(str(last_interval_data.zscore))
-        else:
-            # Option 2: Calculate z-score manually if windows differ
-            # This requires getting raw funding rate records and applying z-score calculation
-            # For simplicity, this part is stubbed. A robust implementation would be needed here.
-            # self.logger().warning(f"Controller zscore_window {self.config.zscore_window} differs from feed window {self._funding_rate_feed.window}. Manual calculation needed.")
-            # For now, let's assume we can get it from the feed if it's available, otherwise log warning.
-            last_interval_data: Optional[FundingRateInterval] = self._funding_rate_feed.last_funding_rate_interval
-            if last_interval_data and last_interval_data.zscore is not None:
-                # This z-score is based on the FEED's window, not necessarily the controller's.
-                return Decimal(str(last_interval_data.zscore))
-        return None
+        last_interval_data: Optional[FundingRateInterval] = self._funding_rate_feed.last_funding_rate_interval
+        if not last_interval_data:
+            self.logger().warning(
+                f"last entry of FundingRateInterval is not available from {self._funding_rate_feed.name}"
+            )
+            return None
+
+        if last_interval_data.zscores is None:
+            self.logger().warning(
+                f"Last entry of FundingRateInterval has zscores = None for {self._funding_rate_feed.name}"
+            )
+            return None
+
+        zscore_key = f"zscore_{self.config.zscore_window}"
+        specific_zscore_value = last_interval_data.zscores.get(zscore_key)
+        if specific_zscore_value is None:
+            self.logger().warning(
+                f"Z-score for window {self.config.zscore_window} (key: {zscore_key}) not found in "
+                f"available zscores: {last_interval_data.zscores} from {self._funding_rate_feed.name}."
+            )
+            return None
+        return Decimal(str(specific_zscore_value))
 
     def get_entry_size(self) -> Decimal:
-        # This logic is simplified from the original script.
-        # A more robust solution would involve the MarketDataProvider or connector to get balance.
-        # For controller level, it might rely on total_amount_quote from base config.
-        # Here, we directly use self.config.position_size.
-        # TODO: Re-evaluate how size is determined, possibly using self.config.total_amount_quote
-        # and current price to calculate base asset amount, or ensure connector balances are accessible.
-        # For now, directly using configured position_size.
-        return self.config.position_size
+        trading_pair = self.config.trading_pair
+        base_asset, quote_asset = trading_pair.split("-")
+        available_balance_quote = self.get_available_balance(quote_asset)
+
+        # Estimate price, as we use market order.
+        price_type = (
+            PriceType.BestAsk if self.config.position_direction == PositionDirection.LONG else PriceType.BestBid
+        )
+        price = self.market_data_provider.get_price_by_type(self.config.exchange, trading_pair, price_type)
+        if not isinstance(price, Decimal) or price <= Decimal("0"):
+            self.logger().warning(
+                f"Invalid price ({price}) for {trading_pair} using {price_type.name}, cannot calculate max possible size."
+            )
+            return Decimal("0")
+
+        # Calculate max size possible with available quote balance and leverage
+        # Amount_base = (Balance_quote * Leverage) / Price_base_quote
+        max_possible_size_quote_adjusted = (available_balance_quote * self.config.leverage) / price
+
+        configured_size_base = self.config.position_size
+        entry_size_base = min(max_possible_size_quote_adjusted, configured_size_base)
+
+        if entry_size_base <= Decimal("0"):
+            self.logger().warning(
+                f"Not enough balance to open position for {trading_pair}. "
+                f"Available quote: {available_balance_quote:.6f} {quote_asset}, "
+                f"Max possible size (leveraged): {max_possible_size_quote_adjusted:.6f} {base_asset}. "
+                f"Configured size: {configured_size_base:.6f} {base_asset}."
+            )
+            return Decimal("0")
+
+        if entry_size_base < configured_size_base and entry_size_base > Decimal("0"):
+            self.logger().warning(
+                f"Available balance for {quote_asset} with leverage {self.config.leverage}x "
+                f"allows max size of {max_possible_size_quote_adjusted:.6f} {base_asset}. "
+                f"Configured position size is {configured_size_base:.6f} {base_asset}. "
+                f"Using smaller size: {entry_size_base:.6f} {base_asset}."
+            )
+        return entry_size_base
+
+    def is_ready_for_new_position(self) -> bool:
+        return self.active_position is None
 
     def is_within_entry_window(self) -> bool:
         candles_df = self.get_candle_df()
-        if len(candles_df) < 1:  # Need current candle
+        if len(candles_df) < 2:
+            self.logger().warning("Not enough candle data to determine entry window.")
             return False
-        current_timestamp_s = self.market_data_provider.time()
-        current_candle_open_timestamp_s = candles_df.iloc[-1]["timestamp"]
+
+        current_timestamp_s = self.current_timestamp  # in seconds
+        current_candle_open_timestamp_s = candles_df.iloc[-1]["timestamp"]  # This is float from pandas
         if pd.isna(current_candle_open_timestamp_s):
+            self.logger().warning("Current candle open timestamp is NaN.")
             return False
+
         elapsed_seconds_since_open = current_timestamp_s - float(current_candle_open_timestamp_s)
-        return 0 <= elapsed_seconds_since_open <= self.config.entry_window_in_sec
+        is_within_window = 0 <= elapsed_seconds_since_open <= self.config.entry_window_in_sec
+
+        if is_within_window:
+            current_candle_open_time = pd.Timestamp(current_candle_open_timestamp_s, unit="s", tz="UTC")
+            current_time = pd.Timestamp(current_timestamp_s, unit="s", tz="UTC")
+            self.logger().info(
+                f"Current time: {current_time} IS within entry window of candle opened at {current_candle_open_time} "
+                f"({elapsed_seconds_since_open:.2f}s elapsed of {self.config.entry_window_in_sec}s window)"
+            )
+        return is_within_window
 
     def is_candle_data_updated(self) -> bool:
         candles_df = self.get_candle_df()
-        if len(candles_df) < 2:
+        if len(candles_df) < 2:  # Need at least two candles: one completed, one current
+            self.logger().warning("Not enough candle data to check if updated.")
             return False
+
+        # Last completed candle is at index -2
         last_completed_candle_timestamp_s = candles_df.iloc[-2]["timestamp"]
         if pd.isna(last_completed_candle_timestamp_s):
+            self.logger().warning("Last completed candle timestamp is NaN.")
             return False
+
         now_ms = TimeUtility.now_ms()
         expected_last_completed_interval_start_ms = IntervalUtility.get_last_interval_start_timestamp(
             now_ms, self.config.candle_interval
         )
+
         last_completed_candle_start_timestamp_ms = int(float(last_completed_candle_timestamp_s) * 1000)
-        return last_completed_candle_start_timestamp_ms == expected_last_completed_interval_start_ms
+        is_updated = last_completed_candle_start_timestamp_ms == expected_last_completed_interval_start_ms
+        if not is_updated:
+            self.logger().warning(
+                f"Candle data not updated. Last completed candle start time: {pd.Timestamp(last_completed_candle_start_timestamp_ms, unit='ms', tz='UTC')} "
+                f"(expected start time: {pd.Timestamp(expected_last_completed_interval_start_ms, unit='ms', tz='UTC')})."
+            )
+        return is_updated
 
     def is_funding_rate_data_updated(self) -> bool:
-        if not self._funding_rate_feed or not self._funding_rate_feed.ready:
+        if not self._funding_rate_feed or not self._funding_rate_feed.is_updated():
+            self.logger().warning("FundingRateDataFeed is not updated, return None for last zscore value")
             return False
-        return self._funding_rate_feed.is_updated()
+        is_updated = self._funding_rate_feed.is_updated()
+        if not is_updated:
+            self.logger().warning(f"{self._funding_rate_feed.name} is not updated.")
+        return is_updated
 
     def should_entry_on_zscore_and_sma(self) -> bool:
-        if self._last_zscore is None or self._last_close_price is None:
+        zscore = self.get_last_zscore()
+        if zscore is None:
+            self.logger().warning("Last zscore is None at should_entry_on_zscore_and_sma")
             return False
 
+        last_close_price = self.get_last_close_price()
+        if last_close_price is None:
+            self.logger().warning("Last close price is None at should_entry_on_zscore_and_sma")
+            return False
+
+        # Default to true if no SMA check
         is_price_entry_condition_met: bool = True
         if self.config.position_direction == PositionDirection.LONG:
-            is_zscore_entry_condition_met = self._last_zscore <= self.config.lower_threshold
+            is_zscore_entry_condition_met = zscore <= self.config.lower_threshold
             if self.config.entry_sma_window is not None:
-                if self._last_entry_sma is None:
+                entry_sma = self.get_last_sma(self.config.entry_sma_window)
+                if entry_sma is None:
+                    self.logger().warning("Last entry SMA is None for LONG entry check")
                     return False
-                is_price_entry_condition_met = self._last_close_price > self._last_entry_sma
-        else:  # SHORT
-            is_zscore_entry_condition_met = self._last_zscore >= self.config.upper_threshold
+                is_price_entry_condition_met = last_close_price > entry_sma
+        else:
+            is_zscore_entry_condition_met = zscore >= self.config.upper_threshold
             if self.config.entry_sma_window is not None:
-                if self._last_entry_sma is None:
+                entry_sma = self.get_last_sma(self.config.entry_sma_window)
+                if entry_sma is None:
+                    self.logger().warning("Last entry SMA is None for SHORT entry check")
                     return False
-                is_price_entry_condition_met = self._last_close_price < self._last_entry_sma
+                is_price_entry_condition_met = last_close_price < entry_sma
 
         return is_zscore_entry_condition_met and is_price_entry_condition_met
 
     def should_exit_on_zscore_and_sma(self) -> bool:
-        if self._last_zscore is None or self._last_close_price is None:
+        zscore = self.get_last_zscore()
+        if zscore is None:
+            self.logger().warning("Last zscore is None at should_exit_on_zscore_and_sma")
             return False
 
-        is_price_exit_condition_met: bool = False  # Default to False if no SMA check
+        last_close_price = self.get_last_close_price()
+        if last_close_price is None:
+            self.logger().warning("Last close price is None at should_exit_on_zscore_and_sma")
+            return False
+
+        # Default to false if no SMA check, so that exit signal won't always trigger
+        is_price_exit_condition_met: bool = False
         if self.config.position_direction == PositionDirection.LONG:
-            is_zscore_exit_condition_met = self._last_zscore >= self.config.upper_threshold
+            is_zscore_exit_condition_met = zscore >= self.config.upper_threshold
             if self.config.exit_sma_window is not None:
-                if self._last_exit_sma is None:
+                exit_sma = self.get_last_sma(self.config.exit_sma_window)
+                if exit_sma is None:
+                    self.logger().warning("Last exit SMA is None for LONG exit check")
                     return False
-                is_price_exit_condition_met = self._last_close_price < self._last_exit_sma
-        else:  # SHORT
-            is_zscore_exit_condition_met = self._last_zscore <= self.config.lower_threshold
+                is_price_exit_condition_met = last_close_price < exit_sma
+        else:
+            is_zscore_exit_condition_met = zscore <= self.config.lower_threshold
             if self.config.exit_sma_window is not None:
-                if self._last_exit_sma is None:
+                exit_sma = self.get_last_sma(self.config.exit_sma_window)
+                if exit_sma is None:
+                    self.logger().warning("Last exit SMA is None for SHORT exit check")
                     return False
-                is_price_exit_condition_met = self._last_close_price > self._last_exit_sma
+                is_price_exit_condition_met = last_close_price > exit_sma
 
         return is_zscore_exit_condition_met or is_price_exit_condition_met
 
     def should_create_entry(self) -> bool:
-        if not self.market_data_provider.ready:
-            return False  # from ControllerBase
-        if len(self.get_active_executors()) > 0:
-            return False  # Simplified check for active position for this controller
+        if not self.is_ready_for_new_position():
+            return False
         if not self.is_within_entry_window():
             return False
         if not self.is_candle_data_updated():
@@ -267,16 +404,15 @@ class FundingRateController(DirectionalTradingControllerBase):
             return False
 
         is_potential_entry = self.should_entry_on_zscore_and_sma()
-        is_potential_exit = self.should_exit_on_zscore_and_sma()  # Check to avoid conflicting signals
+        is_potential_exit = self.should_exit_on_zscore_and_sma()
         if is_potential_entry and is_potential_exit:
+            self.logger().info("Entry and Exit signals triggered simultaneously. Ignoring both for entry decision.")
             return False
         return is_potential_entry
 
     def should_create_exit(self) -> bool:
-        if not self.market_data_provider.ready:
+        if self.active_position is None:
             return False
-        if not self.get_active_executors():
-            return False  # No active position to exit
         if not self.is_within_entry_window():
             return False
         if not self.is_candle_data_updated():
@@ -284,62 +420,105 @@ class FundingRateController(DirectionalTradingControllerBase):
         if not self.is_funding_rate_data_updated():
             return False
 
-        is_potential_entry = self.should_entry_on_zscore_and_sma()  # Check to avoid conflicting signals
+        is_potential_entry = self.should_entry_on_zscore_and_sma()
         is_potential_exit = self.should_exit_on_zscore_and_sma()
         if is_potential_entry and is_potential_exit:
+            self.logger().info("Entry and Exit signals triggered simultaneously. Ignoring both for exit decision.")
             return False
         return is_potential_exit
 
-    def determine_executor_actions(self) -> List[ExecutorAction]:
-        actions: List[ExecutorAction] = []
-        if self.should_create_entry():
-            entry_size = self.get_entry_size()
-            if entry_size > Decimal("0"):
-                price = self.market_data_provider.get_price_by_type(
-                    self.config.connector_name,
-                    self.config.trading_pair,
-                    (
-                        PriceType.BestAsk
-                        if self.config.position_direction == PositionDirection.LONG
-                        else PriceType.BestBid
-                    ),
-                )  # Market order, price might be for reference or if executor needs it
-                if price is None or price <= Decimal("0"):
-                    price = self._last_close_price  # Fallback
+    def create_actions_proposal(self) -> list[CreateExecutorAction]:
+        if not self.should_create_entry():
+            return []
 
-                trade_type = (
-                    TradeType.BUY if self.config.position_direction == PositionDirection.LONG else TradeType.SELL
-                )
-                executor_config = PositionExecutorConfig(
-                    timestamp=self.market_data_provider.time(),
-                    controller_id=self.config.id,
-                    connector_name=self.config.connector_name,
-                    trading_pair=self.config.trading_pair,
-                    side=trade_type,
-                    entry_price=price,  # For market orders, executor might ignore this or use for slippage control
-                    amount=entry_size,
-                    triple_barrier_config=self.config.triple_barrier_config,
-                    leverage=self.config.leverage,
-                    position_mode=self.config.position_mode,
-                )
-                actions.append(CreateExecutorAction(executor_config=executor_config, controller_id=self.config.id))
+        entry_size = self.get_entry_size()
+        if entry_size <= Decimal("0"):
+            return []
 
-        if self.should_create_exit():
-            active_execs = self.get_active_executors()
-            for exec_info in active_execs:
-                actions.append(StopExecutorAction(executor_id=exec_info.id, controller_id=self.config.id))
-        return actions
-
-    def to_format_status(self) -> List[str]:
-        lines = super().to_format_status()
-        lines.append(
-            f"  Funding Rate Feed: {self._funding_rate_feed.name if self._funding_rate_feed else 'N/A'} "
-            f"(Ready: {self._funding_rate_feed.ready if self._funding_rate_feed else 'N/A'})"
+        trade_type = TradeType.BUY if self.config.position_direction == PositionDirection.LONG else TradeType.SELL
+        executor_config = PositionExecutorConfig(
+            timestamp=self.current_timestamp,
+            connector_name=self.config.exchange,
+            trading_pair=self.config.trading_pair,
+            side=trade_type,
+            amount=entry_size,
+            triple_barrier_config=self.config.triple_barrier_config,
+            leverage=self.config.leverage,
         )
-        lines.append(f"  Last Z-Score: {self._last_zscore if self._last_zscore is not None else 'N/A'}")
-        lines.append(f"  Last Close Price: {self._last_close_price if self._last_close_price is not None else 'N/A'}")
-        lines.append(f"  Position Direction: {self.config.position_direction.value}")
-        lines.append(
-            f"  Upper Threshold: {self.config.upper_threshold}, Lower Threshold: {self.config.lower_threshold}"
+
+        last_close_price = self.get_last_close_price()
+        zscore = self.get_last_zscore()
+        assert isinstance(last_close_price, Decimal) and isinstance(zscore, Decimal)
+        self.log_and_notify_open_position(entry_size, last_close_price, zscore)
+        return [CreateExecutorAction(executor_config=executor_config)]
+
+    def stop_actions_proposal(self) -> list[StopExecutorAction]:
+        if not self.should_create_exit():
+            return []
+
+        assert self.active_position
+        executor_id = self.active_position["executor_id"]
+        last_close_price = self.get_last_close_price()
+        zscore = self.get_last_zscore()
+        if last_close_price is None or zscore is None:
+            self.logger().warning(
+                f"Cant create exit action due to missing price ({last_close_price}) or z-score ({zscore})."
+            )
+            return []
+
+        self.log_and_notify_close_position(last_close_price, zscore)
+        return [StopExecutorAction(executor_id=executor_id)]
+
+    def log_and_notify_open_position(self, entry_size: Decimal, last_close_price: Decimal, zscore: Decimal):
+        entry_sma_str = "N/A"
+        if self.config.entry_sma_window is not None:
+            entry_sma = self.get_last_sma(self.config.entry_sma_window)
+            if entry_sma is not None:
+                entry_sma_str = f"{entry_sma:.4f}"
+
+        direction_str = self.config.position_direction.value.upper()
+        zscore_condition_str = (
+            f"(ZSCORE: {zscore:.4f} <= LOWER_THRESHOLD: {self.config.lower_threshold:.4f})"
+            if self.config.position_direction == PositionDirection.LONG
+            else f"(ZSCORE: {zscore:.4f} >= UPPER_THRESHOLD: {self.config.upper_threshold:.4f})"
         )
-        return lines
+        price_condition_str = (
+            f"(CLOSE PRICE: {last_close_price:.4f} > ENTRY_SMA: {entry_sma_str})"
+            if self.config.position_direction == PositionDirection.LONG
+            else f"(CLOSE PRICE: {last_close_price:.4f} < ENTRY_SMA: {entry_sma_str})"
+        )
+
+        msg = (
+            f"Opening {direction_str} for {self.config.trading_pair} | Size: {entry_size:.6f} | "
+            f"{zscore_condition_str} AND {price_condition_str}"
+        )
+        self.logger().info(msg)
+        self.notify_hb_app_with_timestamp(msg)
+
+    def log_and_notify_close_position(self, last_close_price: Decimal, zscore: Decimal):
+        exit_sma_str = "N/A"
+        if self.config.exit_sma_window is not None:
+            exit_sma = self.get_last_sma(self.config.exit_sma_window)
+            if exit_sma is not None:
+                exit_sma_str = f"{exit_sma:.4f}"
+
+        direction_str = self.config.position_direction.value.upper()
+        zscore_condition_str = (
+            f"(ZSCORE: {zscore:.4f} >= UPPER_THRESHOLD: {self.config.upper_threshold:.4f})"
+            if self.config.position_direction == PositionDirection.LONG
+            else f"(ZSCORE: {zscore:.4f} <= LOWER_THRESHOLD: {self.config.lower_threshold:.4f})"
+        )
+        price_condition_str = (
+            f"(CLOSE PRICE: {last_close_price:.4f} < EXIT_SMA: {exit_sma_str})"
+            if self.config.position_direction == PositionDirection.LONG
+            else f"(CLOSE PRICE: {last_close_price:.4f} > EXIT_SMA: {exit_sma_str})"
+        )
+        msg = (
+            f"Closing {direction_str} for {self.config.trading_pair} | "
+            f"{zscore_condition_str} OR {price_condition_str}"
+        )
+        self.logger().info(msg)
+        self.notify_hb_app_with_timestamp(msg)
+
+    def to_format_status(self) -> list[str]:
+        return [""]
