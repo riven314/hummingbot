@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 from datetime import datetime
@@ -54,7 +55,7 @@ class FundingRateControllersDatabase:
                     aligned_funding_time INTEGER NOT NULL,
                     funding_rate REAL NOT NULL,
                     mark_price REAL NOT NULL,
-                    zscore REAL NULL,
+                    zscores TEXT NULL,
                     requested_at TEXT NOT NULL,
                     is_estimated BOOLEAN NOT NULL,
                     UNIQUE (exchange, symbol, start_time)
@@ -89,7 +90,7 @@ class FundingRateControllersDatabase:
                     r.aligned_funding_time,
                     r.funding_rate,
                     r.mark_price,
-                    r.zscore,
+                    json.dumps(r.zscores) if r.zscores is not None else None,
                     r.requested_at.isoformat(),
                     r.start_time,
                     r.is_estimated,
@@ -99,7 +100,7 @@ class FundingRateControllersDatabase:
             cursor.executemany(
                 """
                 INSERT OR IGNORE INTO FundingRate
-                (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at, start_time, is_estimated)
+                (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 data_to_insert,
@@ -138,7 +139,7 @@ class FundingRateControllersDatabase:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscore, requested_at, start_time, is_estimated
+                SELECT exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated
                 FROM FundingRate
                 WHERE exchange = ? AND symbol = ?
                 ORDER BY start_time DESC
@@ -150,6 +151,17 @@ class FundingRateControllersDatabase:
             for row in rows:
                 row_dict = dict(row)
                 row_dict["requested_at"] = datetime.fromisoformat(row_dict["requested_at"])
+                zscores_str = row_dict.get("zscores")
+                if zscores_str:
+                    try:
+                        row_dict["zscores"] = json.loads(zscores_str)
+                    except json.JSONDecodeError:
+                        self.logger().error(
+                            f"Error decoding zscores string: {zscores_str} for {exchange}, {symbol}, {row_dict['start_time']}"
+                        )
+                        row_dict["zscores"] = None
+                else:
+                    row_dict["zscores"] = None
                 records.append(FundingRateInterval.parse_obj(row_dict))
             records.sort(key=lambda x: x.start_time)
             return records

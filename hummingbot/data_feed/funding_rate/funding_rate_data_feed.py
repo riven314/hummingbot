@@ -30,7 +30,9 @@ class FundingRateDataFeed(DataFeedBase):
         key = (exchange, trading_pair)
         if key not in cls._instances:
             cls._instances[key] = cls(config=config)
-            cls.logger().info(f"Created new FundingRateDataFeed instance for {key} with window: {config.window}")
+            cls.logger().info(
+                f"Created new FundingRateDataFeed instance for {key} with zscore_windows: {config.zscore_windows}"
+            )
         return cls._instances[key]
 
     @classmethod
@@ -73,14 +75,14 @@ class FundingRateDataFeed(DataFeedBase):
         return self._funding_rate_deque[-1] if len(self._funding_rate_deque) > 0 else None
 
     @property
-    def window(self) -> int:
-        return self._config.window
+    def max_window(self) -> int:
+        return self._config.max_window
 
     @property
     def deque_size(self) -> int:
         trading_interval_ms = IntervalUtility.get_duration_ms(self._config.trading_interval)
         fetch_interval_ms = IntervalUtility.get_duration_ms(self._config.update_interval)
-        window_duration_ms = self._config.window * trading_interval_ms
+        window_duration_ms = self.max_window * trading_interval_ms
         records_needed = math.ceil(window_duration_ms / fetch_interval_ms)
         return records_needed + 10
 
@@ -148,11 +150,11 @@ class FundingRateDataFeed(DataFeedBase):
         else:
             self.logger().warning(f"API returned no historical records for {self.name}.")
 
-        if len(self._funding_rate_deque) >= self.window:  # Check readiness based on window size
+        if len(self._funding_rate_deque) >= self.max_window:
             self.logger().info(f"{self.name} is ready with {len(self._funding_rate_deque)} records.")
         else:
             self.logger().warning(
-                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.window}). Will retry on next interval."
+                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.max_window}). Will retry on next interval."
             )
 
     # TODO: more robust way to insert live data (e.g. miss N previous records, or missing live record)
@@ -205,8 +207,9 @@ class FundingRateDataFeed(DataFeedBase):
             "mark_price",
             "requested_at",
             "is_estimated",
-            "zscore",
         ]
+        for window in self._config.zscore_windows:
+            empty_df_columns.append(f"zscore_{window}")
         empty_df_index = pd.DatetimeIndex([])
 
         if not self._funding_rate_deque:
@@ -253,33 +256,50 @@ class FundingRateDataFeed(DataFeedBase):
         # set index to be the start timestamp of the trading interval
         df_resampled.index = df_resampled.index - pd.Timedelta(self._config.trading_interval)
 
-        # calculate Z-score
-        if len(df_resampled) >= self.window:
-            rolling_mean = df_resampled["funding_rate"].rolling(window=self.window).mean()
-            rolling_std = df_resampled["funding_rate"].rolling(window=self.window).std()
-            df_resampled["zscore"] = (df_resampled["funding_rate"] - rolling_mean) / rolling_std
-        else:
-            self.logger().warning(
-                f"Not enough data ({len(df_resampled)}) to calculate Z-score of window size {self.window}, returning empty DataFrame"
-            )
-            df_resampled["zscore"] = pd.NA
+        # calculate Z-scores for each window
+        for window_size in self._config.zscore_windows:
+            zscore_col_name = f"zscore_{window_size}"
+            if len(df_resampled) >= window_size:
+                rolling_mean = df_resampled["funding_rate"].rolling(window=window_size).mean()
+                rolling_std = df_resampled["funding_rate"].rolling(window=window_size).std()
+                df_resampled[zscore_col_name] = (df_resampled["funding_rate"] - rolling_mean) / rolling_std
+            else:
+                self.logger().warning(
+                    f"Not enough data ({len(df_resampled)}) to calculate Z-score for window size {window_size}."
+                )
+                df_resampled[zscore_col_name] = pd.NA
 
-        return df_resampled[empty_df_columns]
+        final_columns = [
+            "exchange",
+            "symbol",
+            "funding_time",
+            "aligned_funding_time",
+            "funding_rate",
+            "mark_price",
+            "requested_at",
+            "is_estimated",
+        ] + [f"zscore_{w}" for w in self._config.zscore_windows]
+        return df_resampled[final_columns]
 
     @property
-    def funding_rate_intervals(self) -> List[FundingRateInterval]:
+    def funding_rate_intervals(self) -> list[FundingRateInterval]:
         df: pd.DataFrame = self.get_trading_interval_dataframe()
         if df.empty:
             return []
 
-        intervals: List[FundingRateInterval] = []
+        intervals: list[FundingRateInterval] = []
         for timestamp_index, row_data in df.iterrows():
             start_time_ms: int = TimeUtility.datetime_to_ms(timestamp_index.to_pydatetime())
-            z_score_value: Optional[float] = row_data["zscore"] if pd.notna(row_data["zscore"]) else None
+            zscores_data: dict[str, float] = {}
+            for window_size in self._config.zscore_windows:
+                zscore_col_name = f"zscore_{window_size}"
+                if pd.notna(row_data[zscore_col_name]):
+                    zscores_data[zscore_col_name] = row_data[zscore_col_name]
+
             intervals.append(
                 FundingRateInterval(
                     start_time=start_time_ms,
-                    zscore=z_score_value,
+                    zscores=zscores_data if zscores_data else None,
                     funding_rate=row_data["funding_rate"],
                     mark_price=row_data["mark_price"],
                     exchange=row_data["exchange"],
@@ -316,8 +336,14 @@ class FundingRateDataFeed(DataFeedBase):
         for timestamp, row in df.iterrows():
             ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
             rate_str = f"{row['funding_rate']:.8f}"
-            zscore_str = f"{row['zscore']:.4f}" if pd.notna(row["zscore"]) else "N/A"
-            formatted_lines.append(f"  {ts_str} | Rate: {rate_str} | ZScore: {zscore_str}")
+            zscore_parts = []
+            for window_size in self._config.zscore_windows:
+                zscore_col_name = f"zscore_{window_size}"
+                zscore_val = row[zscore_col_name]
+                zscore_str = f"{zscore_val:.4f}" if pd.notna(zscore_val) else "N/A"
+                zscore_parts.append(f"Z({window_size}): {zscore_str}")
+            zscores_display = " | ".join(zscore_parts)
+            formatted_lines.append(f"  {ts_str} | Rate: {rate_str} | {zscores_display}")
         return [("Recent Hours Statistics:", "\n".join(formatted_lines))]
 
     def format_status(self) -> str:
@@ -328,7 +354,8 @@ class FundingRateDataFeed(DataFeedBase):
         lines.append(f"  Trading Pair: {self._config.trading_pair}")
         lines.append(f"  Interval: {self._config.update_interval}")
         lines.append(f"  Trading Interval: {self._config.trading_interval}")
-        lines.append(f"  Window: {self.window}\n\n")
+        lines.append(f"  ZScore Windows: {self._config.zscore_windows}")
+        lines.append(f"  Max Window for Deque: {self.max_window}\n\n")
 
         record_lines = self.format_status_records(num_records=4)
         if record_lines:

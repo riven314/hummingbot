@@ -34,7 +34,13 @@ class FundingRateConfig(BaseModel, SymbolValidatorMixin):
     trading_pair: str
     update_interval: FundingRateIntervalType
     trading_interval: TradingIntervalType
-    window: int
+    zscore_windows: list[int]
+
+    @property
+    def max_window(self) -> int:
+        if not self.zscore_windows:
+            return 0
+        return max(self.zscore_windows)
 
     @validator("update_interval", pre=True)
     def check_interval(cls, v: str) -> str:
@@ -48,10 +54,10 @@ class FundingRateConfig(BaseModel, SymbolValidatorMixin):
             raise ValueError("Trading interval must be '1h' at the moment")
         return v
 
-    @validator("window", pre=True)
-    def check_window(cls, v: int) -> int:
+    @validator("zscore_windows", pre=True, each_item=True)
+    def check_zscore_windows(cls, v: int) -> int:
         if v <= 1:
-            raise ValueError("Window size must be greater than 1")
+            raise ValueError("Each zscore window size must be greater than 1")
         return v
 
 
@@ -77,4 +83,4 @@ class FundingRateRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin
 
 class FundingRateInterval(FundingRateRecord):
     start_time: int
-    zscore: Optional[float] = None
+    zscores: Optional[dict[str, float]] = None
