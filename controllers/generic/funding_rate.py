@@ -124,6 +124,15 @@ class FundingRateController(ControllerBase):
         timestamp = pd.Timestamp.fromtimestamp(self.current_timestamp)
         self.notify_hb_app(f"({timestamp}) {msg}")
 
+    def start(self):
+        super().start()
+        msg = f"Starting FundingRateController for {self.config.trading_pair}: "
+        msg += f"position_direction: {self.config.position_direction}, "
+        msg += f"zscore_window: {self.config.zscore_window}, "
+        msg += f"entry_sma_window: {self.config.entry_sma_window}, "
+        msg += f"exit_sma_window: {self.config.exit_sma_window}"
+        self.notify_hb_app_with_timestamp(msg)
+
     @property
     def current_timestamp(self) -> float:
         return self.market_data_provider.time()
@@ -267,6 +276,12 @@ class FundingRateController(ControllerBase):
             )
         return entry_size_base
 
+    def is_market_data_ready(self) -> bool:
+        is_ready = self.market_data_provider.ready
+        if not is_ready:
+            self.logger().warning("MarketDataProvider is not ready, skipping entry/exit decision.")
+        return is_ready
+
     def is_ready_for_new_position(self) -> bool:
         return self.active_position is None
 
@@ -394,6 +409,8 @@ class FundingRateController(ControllerBase):
         return is_zscore_exit_condition_met or is_price_exit_condition_met
 
     def should_create_entry(self) -> bool:
+        if not self.is_market_data_ready():
+            return False
         if not self.is_ready_for_new_position():
             return False
         if not self.is_within_entry_window():
@@ -411,6 +428,8 @@ class FundingRateController(ControllerBase):
         return is_potential_entry
 
     def should_create_exit(self) -> bool:
+        if not self.is_market_data_ready():
+            return False
         if self.active_position is None:
             return False
         if not self.is_within_entry_window():
@@ -521,4 +540,19 @@ class FundingRateController(ControllerBase):
         self.notify_hb_app_with_timestamp(msg)
 
     def to_format_status(self) -> list[str]:
-        return [""]
+        if not self.is_market_data_ready():
+            return ["MarketDataProvider is not ready, skipping entry/exit decision."]
+
+        lines = []
+        entry_sma_str = self.config.entry_sma_window if self.config.entry_sma_window is not None else "N/A"
+        exit_sma_str = self.config.exit_sma_window if self.config.exit_sma_window is not None else "N/A"
+
+        lines.append("Controller Parameters:")
+        lines.append(f"  Position Direction: {self.config.position_direction.value.capitalize()}")
+        lines.append(f"  Upper Threshold: {self.config.upper_threshold}")
+        lines.append(f"  Lower Threshold: {self.config.lower_threshold}")
+        lines.append(f"  Z-score Window: {self.config.zscore_window}")
+        lines.append(f"  Entry SMA Window: {entry_sma_str}")
+        lines.append(f"  Exit SMA Window: {exit_sma_str}")
+
+        return lines

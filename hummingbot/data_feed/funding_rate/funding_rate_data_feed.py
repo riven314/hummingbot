@@ -197,6 +197,7 @@ class FundingRateDataFeed(DataFeedBase):
             return False
         return last_record.start_time == last_interval_start_timestamp
 
+    # TODO: add field sma_prices and close_price in DataFrame
     def get_trading_interval_dataframe(self) -> pd.DataFrame:
         empty_df_columns = [
             "exchange",

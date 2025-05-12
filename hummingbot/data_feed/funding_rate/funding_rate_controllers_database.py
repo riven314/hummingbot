@@ -9,6 +9,7 @@ from hummingbot.data_feed.funding_rate.data_types import FundingRateInterval
 from hummingbot.logger import HummingbotLogger
 
 
+# TODO: add field sma_prices and close_price in schema
 class FundingRateControllersDatabase:
     _logger: Optional[HummingbotLogger] = None
 
