@@ -150,11 +150,11 @@ class FundingRateDataFeed(DataFeedBase):
         else:
             self.logger().warning(f"API returned no historical records for {self.name}.")
 
-        if len(self._funding_rate_deque) >= self.max_window:
+        if len(self._funding_rate_deque) >= self.deque_size:
             self.logger().info(f"{self.name} is ready with {len(self._funding_rate_deque)} records.")
         else:
             self.logger().warning(
-                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.max_window}). Will retry on next interval."
+                f"{self.name} could not gather enough initial data ({len(self._funding_rate_deque)}/{self.deque_size}). Will retry on next interval."
             )
 
     # TODO: more robust way to insert live data (e.g. miss N previous records, or missing live record)
