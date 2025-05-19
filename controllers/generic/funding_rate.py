@@ -484,7 +484,7 @@ class FundingRateController(ControllerBase):
         zscore = self.get_last_zscore()
         assert isinstance(last_close_price, Decimal) and isinstance(zscore, Decimal)
         self.log_and_notify_open_position(entry_size, last_close_price, zscore)
-        return [CreateExecutorAction(executor_config=executor_config)]
+        return [CreateExecutorAction(controller_id=self.config.id, executor_config=executor_config)]
 
     def stop_actions_proposal(self) -> list[StopExecutorAction]:
         if not self.should_create_exit():
@@ -501,7 +501,7 @@ class FundingRateController(ControllerBase):
             return []
 
         self.log_and_notify_close_position(last_close_price, zscore)
-        return [StopExecutorAction(executor_id=executor_id)]
+        return [StopExecutorAction(controller_id=self.config.id, executor_id=executor_id)]
 
     def log_and_notify_open_position(self, entry_size: Decimal, last_close_price: Decimal, zscore: Decimal):
         entry_sma_str = "N/A"
