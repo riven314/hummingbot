@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Optional
 
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, validator
 
 from hummingbot.client.config.config_data_types import ClientFieldData
 from hummingbot.core.data_type.common import OrderType, PriceType, TradeType
@@ -82,6 +82,12 @@ class FundingRateControllerConfig(ControllerConfigBase):
         gt=0,
         client_data=ClientFieldData(prompt_on_new=True, prompt=lambda mi: "Leverage (e.g. 10 for 10x)"),
     )
+
+    @validator("exchange")
+    def validate_exchange(cls, v: str) -> str:
+        if v != "binance_perpetual":
+            raise ValueError("Exchange must be binance_perpetual")
+        return v
 
     @property
     def triple_barrier_config(self) -> TripleBarrierConfig:
