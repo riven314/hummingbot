@@ -109,6 +109,13 @@ class FundingRateController(ControllerBase):
         self.config: FundingRateControllerConfig = config
         self._funding_rate_feed: Optional[FundingRateDataFeed] = None
 
+    @property
+    def tag(self) -> str:
+        return (
+            f"{self.config.controller_name}:{self.config.position_direction}:{self.config.zscore_window}"
+            f":{self.config.upper_threshold:.2f}:{self.config.lower_threshold:.2f}:{self.config.entry_sma_window}:{self.config.exit_sma_window}"
+        )
+
     def set_funding_rate_feed(self, feed: FundingRateDataFeed):
         self._funding_rate_feed = feed
 
@@ -130,7 +137,7 @@ class FundingRateController(ControllerBase):
 
     def notify_hb_app_with_timestamp(self, msg: str):
         timestamp = pd.Timestamp.fromtimestamp(self.current_timestamp)
-        self.notify_hb_app(f"({timestamp}) {msg}")
+        self.notify_hb_app(f"({timestamp}) [{self.tag}] {msg}")
 
     def start(self):
         super().start()
