@@ -28,12 +28,12 @@ class FundingRateControllersDatabase:
 
     def _connect(self):
         try:
-            self._conn = sqlite3.connect(self._db_path, isolation_level=None)  # Autocommit mode
-            self._conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
+            self._conn = sqlite3.connect(self._db_path)
+            self._conn.row_factory = sqlite3.Row
 
             # set WAL journal mode to improve write performance
-            cursor = self._conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
+            # cursor = self._conn.cursor()
+            # cursor.execute("PRAGMA journal_mode=WAL")
 
             self.logger().info(f"Connected to FundingRate database: {self._db_path}")
         except sqlite3.Error as e:
@@ -75,7 +75,10 @@ class FundingRateControllersDatabase:
             self.logger().error(f"Error creating FundingRate table: {e}", exc_info=True)
             raise
 
-    def insert_records(self, records: List[FundingRateInterval]):
+    def _round_zscores(self, zscores: dict[str, float]) -> dict[str, float]:
+        return {k: round(v, 5) for k, v in zscores.items()}
+
+    def insert_records(self, records: List[FundingRateInterval]) -> None:
         if not self._conn:
             raise ConnectionError("Database connection is not available.")
         if not records:
@@ -83,31 +86,39 @@ class FundingRateControllersDatabase:
 
         try:
             cursor = self._conn.cursor()
-            data_to_insert = [
-                (
-                    r.exchange,
-                    r.symbol,
-                    r.funding_time,
-                    r.aligned_funding_time,
-                    r.funding_rate,
-                    r.mark_price,
-                    json.dumps(r.zscores) if r.zscores is not None else None,
-                    r.requested_at.isoformat(),
-                    r.start_time,
-                    r.is_estimated,
+            batch_size = 200
+
+            for i in range(0, len(records), batch_size):
+                end_idx = i + batch_size
+                batch = records[i:end_idx]
+                data_to_insert = [
+                    (
+                        r.exchange,
+                        r.symbol,
+                        r.funding_time,
+                        r.aligned_funding_time,
+                        r.funding_rate,
+                        r.mark_price,
+                        json.dumps(self._round_zscores(r.zscores)) if r.zscores is not None else None,
+                        r.requested_at.isoformat(),
+                        r.start_time,
+                        r.is_estimated,
+                    )
+                    for r in batch
+                ]
+
+                cursor.execute("BEGIN TRANSACTION")
+                cursor.executemany(
+                    """
+                    INSERT OR IGNORE INTO FundingRate
+                    (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    data_to_insert,
                 )
-                for r in records
-            ]
-            cursor.executemany(
-                """
-                INSERT OR IGNORE INTO FundingRate
-                (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                data_to_insert,
-            )
-            self._conn.commit()
-            self.logger().debug(f"Inserted or ignored {len(data_to_insert)} records.")
+                cursor.execute("COMMIT")
+                self.logger().info(f"Inserted batch of {len(batch)} records ({i+len(batch)}/{len(records)} total)")
+
         except sqlite3.Error as e:
             self.logger().error(f"Error inserting funding rate records: {e}", exc_info=True)
 
