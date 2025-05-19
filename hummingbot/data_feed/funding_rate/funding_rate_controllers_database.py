@@ -57,8 +57,9 @@ class FundingRateControllersDatabase:
                     funding_rate REAL NOT NULL,
                     mark_price REAL NOT NULL,
                     zscores TEXT NULL,
-                    requested_at TEXT NOT NULL,
                     is_estimated BOOLEAN NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
                     UNIQUE (exchange, symbol, start_time)
                 )
                 """
@@ -87,6 +88,7 @@ class FundingRateControllersDatabase:
         try:
             cursor = self._conn.cursor()
             batch_size = 200
+            current_time = datetime.now().isoformat()
 
             for i in range(0, len(records), batch_size):
                 end_idx = i + batch_size
@@ -103,6 +105,7 @@ class FundingRateControllersDatabase:
                         r.requested_at.isoformat(),
                         r.start_time,
                         r.is_estimated,
+                        current_time,
                     )
                     for r in batch
                 ]
@@ -111,8 +114,8 @@ class FundingRateControllersDatabase:
                 cursor.executemany(
                     """
                     INSERT OR IGNORE INTO FundingRate
-                    (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (exchange, symbol, funding_time, aligned_funding_time, funding_rate, mark_price, zscores, requested_at, start_time, is_estimated, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     data_to_insert,
                 )
