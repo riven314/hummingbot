@@ -1,7 +1,7 @@
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -88,7 +88,7 @@ class FundingRateControllersDatabase:
         try:
             cursor = self._conn.cursor()
             batch_size = 200
-            current_time = datetime.now().isoformat()
+            current_time = datetime.now(timezone.utc).isoformat()
 
             for i in range(0, len(records), batch_size):
                 end_idx = i + batch_size

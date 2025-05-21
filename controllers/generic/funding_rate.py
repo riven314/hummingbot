@@ -555,19 +555,36 @@ class FundingRateController(ControllerBase):
         self.notify_hb_app_with_timestamp(msg)
 
     def to_format_status(self) -> list[str]:
-        if not self.is_market_data_ready():
-            return ["MarketDataProvider is not ready, skipping entry/exit decision."]
+        if not (self.is_market_data_ready() and self._funding_rate_feed):
+            return ["MarketDataProvider and FundingRateDataFeed are not ready."]
 
-        lines = []
+        lines = [f"\nController ID: {self.config.id}"]
+
+        # log strategy parameters
         entry_sma_str = self.config.entry_sma_window if self.config.entry_sma_window is not None else "N/A"
         exit_sma_str = self.config.exit_sma_window if self.config.exit_sma_window is not None else "N/A"
-
-        lines.append("Controller Parameters:")
         lines.append(f"  Position Direction: {self.config.position_direction.value.capitalize()}")
         lines.append(f"  Upper Threshold: {self.config.upper_threshold}")
         lines.append(f"  Lower Threshold: {self.config.lower_threshold}")
         lines.append(f"  Z-score Window: {self.config.zscore_window}")
         lines.append(f"  Entry SMA Window: {entry_sma_str}")
         lines.append(f"  Exit SMA Window: {exit_sma_str}")
+
+        # log active position
+        active_pos = self.active_position
+        if active_pos:
+            entry_price = active_pos.get("current_position_average_price")
+            entry_price_str = f"{entry_price:.4f}" if entry_price else "N/A"
+            lines.extend(
+                [
+                    "\nActive Position:",
+                    f"  Pair: {active_pos['trading_pair']}",
+                    f"  Entry Price: {entry_price_str}",
+                    f"  Created: {pd.Timestamp(active_pos['create_timestamp'], unit='s', tz='UTC').strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                    f"  Executor ID: {active_pos['executor_id']}",
+                ]
+            )
+        else:
+            lines.append("\nNo Active Position.")
 
         return lines
