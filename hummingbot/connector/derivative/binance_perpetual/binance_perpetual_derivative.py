@@ -342,6 +342,11 @@ class BinancePerpetualDerivative(PerpetualDerivativePyBase):
                     client_order_id=tracked_order.client_order_id,
                 )
                 return _order_update
+
+            self.logger().network(
+                f"Error fetching order status for {tracked_order.client_order_id}: {order_update}"
+            )
+
         _order_update: OrderUpdate = OrderUpdate(
             trading_pair=tracked_order.trading_pair,
 
