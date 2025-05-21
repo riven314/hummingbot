@@ -22,7 +22,7 @@ class TimestampValidatorMixin:
 
 
 class SymbolValidatorMixin:
-    @validator("symbol")
+    @validator("symbol", "trading_pair", allow_reuse=True)
     def validate_symbol(cls, symbol: str) -> str:
         if not symbol:
             raise ValueError("Symbol cannot be empty")
@@ -31,10 +31,29 @@ class SymbolValidatorMixin:
         return symbol
 
 
-class OpenInterestMarketCapConfig(BaseModel):
+class OpenInterestMarketCapConfig(BaseModel, SymbolValidatorMixin):
+    exchange: str
     trading_pair: str
     interval: IntervalType
-    window: int
+    zscore_windows: list[int]
+
+    @validator("exchange")
+    def validate_exchange(cls, v: str) -> str:
+        if v not in ("binance_perpetual", "binance_perpetual_testnet"):
+            raise ValueError("Exchange must be 'binance_perpetual' or 'binance_perpetual_testnet'")
+        return v
+
+    @property
+    def max_window_with_buffer(self) -> int:
+        return max(self.zscore_windows) + 10
+
+    @validator("zscore_windows")
+    def validate_zscore_windows(cls, v: list[int]) -> list[int]:
+        if len(v) < 1:
+            raise ValueError("zscore_windows must contain at least 1 entry")
+        if any(x <= 1 for x in v):
+            raise ValueError("Each zscore window must be larger than 1")
+        return v
 
 
 class LiveOpenInterestData(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin):
@@ -109,7 +128,7 @@ class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin, SymbolVali
     symbol: str
     open_interest: float
     token_supply: float
-    zscore: Optional[float]
+    zscores: Optional[dict[int, float]]
     is_open_interest_estimated: bool = False
     is_token_supply_estimated: bool = False
     timestamp: int
