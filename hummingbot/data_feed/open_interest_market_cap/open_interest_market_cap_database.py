@@ -80,21 +80,32 @@ class OpenInterestMarketCapDatabase:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
-            data = [
-                (
+            data = []
+            for record in records:
+                zscore_to_store = None
+                if record.zscores:  # Check if it's not None and not empty
+                    if len(record.zscores) == 1:
+                        value = list(record.zscores.values())[0]
+                        zscore_to_store = float(value)
+                    elif len(record.zscores) > 1:
+                        OpenInterestMarketCapDatabase.logger().warning(
+                            f"Record for {record.symbol} at {record.timestamp} has {len(record.zscores)} z-scores. "
+                            f"Storing NULL in DB. Z-scores: {record.zscores}"
+                        )
+
+                record_tuple = (
                     record.timestamp,
                     record.symbol,
                     record.open_interest_provider,
                     record.token_supply_provider,
                     float(record.open_interest),
                     float(record.token_supply),
-                    float(record.zscore) if record.zscore is not None else None,
+                    zscore_to_store,  # Use the calculated value
                     int(record.is_open_interest_estimated),
                     int(record.is_token_supply_estimated),
                     record.requested_at.isoformat(),
                 )
-                for record in records
-            ]
+                data.append(record_tuple)
             cursor.executemany(insert_query, data)
             self.conn.commit()
             return len(data)
