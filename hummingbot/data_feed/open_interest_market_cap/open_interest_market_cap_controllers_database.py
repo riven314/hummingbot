@@ -48,6 +48,8 @@ class OpenInterestMarketCapControllersDatabase:
                 """
                 CREATE TABLE IF NOT EXISTS OIMCapData (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    open_interest_provider TEXT NOT NULL,
+                    token_supply_provider TEXT NOT NULL,
                     exchange TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     timestamp INTEGER NOT NULL,
@@ -97,7 +99,7 @@ class OpenInterestMarketCapControllersDatabase:
                     zscores_json = json.dumps(self._round_zscores(r.zscores)) if r.zscores is not None else None
                     data_to_insert.append(
                         (
-                            r.open_interest_provider,
+                            r.exchange,
                             r.symbol,
                             r.timestamp,
                             r.open_interest,
@@ -108,6 +110,8 @@ class OpenInterestMarketCapControllersDatabase:
                             r.is_token_supply_estimated,
                             r.requested_at.isoformat(),
                             current_time_iso,
+                            r.open_interest_provider,
+                            r.token_supply_provider,
                         )
                     )
 
@@ -116,8 +120,9 @@ class OpenInterestMarketCapControllersDatabase:
                     """
                     INSERT OR IGNORE INTO OIMCapData
                     (exchange, symbol, timestamp, open_interest, token_supply, oi_mcap_ratio,
-                    zscores, is_open_interest_estimated, is_token_supply_estimated, requested_at, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    zscores, is_open_interest_estimated, is_token_supply_estimated, requested_at, created_at,
+                    open_interest_provider, token_supply_provider)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     data_to_insert,
                 )
@@ -162,7 +167,8 @@ class OpenInterestMarketCapControllersDatabase:
             cursor.execute(
                 """
                 SELECT exchange, symbol, timestamp, open_interest, token_supply, oi_mcap_ratio,
-                       zscores, is_open_interest_estimated, is_token_supply_estimated, requested_at
+                       zscores, is_open_interest_estimated, is_token_supply_estimated, requested_at,
+                       open_interest_provider, token_supply_provider
                 FROM OIMCapData
                 WHERE exchange = ? AND symbol = ?
                 ORDER BY timestamp DESC
@@ -189,8 +195,9 @@ class OpenInterestMarketCapControllersDatabase:
                         )
 
                 record = OpenInterestMarketCapRecord(
-                    open_interest_provider=row_dict["exchange"],
-                    token_supply_provider="N/A_from_DB",
+                    open_interest_provider=row_dict["open_interest_provider"],
+                    token_supply_provider=row_dict["token_supply_provider"],
+                    exchange=row_dict["exchange"],
                     symbol=row_dict["symbol"],
                     timestamp=row_dict["timestamp"],
                     open_interest=row_dict["open_interest"],

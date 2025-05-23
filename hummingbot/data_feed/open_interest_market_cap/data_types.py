@@ -125,6 +125,7 @@ class HistoricalTokenSupplyData(BaseModel, TimestampValidatorMixin):
 class OpenInterestMarketCapRecord(BaseModel, TimestampValidatorMixin, SymbolValidatorMixin):
     open_interest_provider: str
     token_supply_provider: str
+    exchange: str
     symbol: str
     open_interest: float
     token_supply: float

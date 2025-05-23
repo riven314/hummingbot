@@ -139,6 +139,7 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
                 OpenInterestMarketCapRecord(
                     open_interest_provider=self._open_interest_provider.name,
                     token_supply_provider=self._glassnode_token_supply_provider.name,
+                    exchange=self._config.exchange,
                     symbol=self._config.trading_pair,
                     open_interest=oi.open_interest,
                     token_supply=ts.total_supply,
@@ -191,21 +192,24 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         is_oi_estimated, is_ts_estimated = False, False
 
         # handle API request failure, and fallback to Glassnode
+        token_supply_provider = self._coingecko_token_supply_provider.name
         if ts_result is None or ts_result.total_supply == 0.0:
             self.logger().warning(
                 f"Live token supply fetched from {self._coingecko_token_supply_provider.name} "
                 f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to Glassnode."
             )
             ts_result = await self._glassnode_token_supply_provider.fetch_live_token_supply()
+            token_supply_provider = self._glassnode_token_supply_provider.name
 
         # handle None or problematic returning data and fallback to previous record
         last_record = self._queue[-1]
         if ts_result is None or ts_result.total_supply is None or ts_result.total_supply == 0.0:
             token_supply = last_record.token_supply
+            token_supply_provider = last_record.token_supply_provider
             is_ts_estimated = True
             self.logger().warning(
                 f"Live token supply fetched from {self._coingecko_token_supply_provider.name} "
-                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to previous record ({last_record.token_supply})"
+                f"for {self._config.trading_pair} is None or 0 ({ts_result}), fallback to previous record ({last_record.token_supply} from {token_supply_provider})"
             )
         else:
             token_supply = ts_result.total_supply
@@ -225,7 +229,8 @@ class OpenInterestMarketCapFeed(DataFeedBase, ABC):
         self._queue.append(
             OpenInterestMarketCapRecord(
                 open_interest_provider=self._open_interest_provider.name,
-                token_supply_provider=self._coingecko_token_supply_provider.name,
+                token_supply_provider=token_supply_provider,
+                exchange=self._config.exchange,
                 symbol=self._config.trading_pair,
                 open_interest=open_interest,
                 token_supply=token_supply,
