@@ -127,17 +127,11 @@ class OpenInterestMarketCapController(ControllerBase):
 
         selected_executor = active_executors[0]
         entry_price = selected_executor.custom_info.get("current_position_average_price")
-        if entry_price is None and selected_executor.filled_amount_base > 0:  # type: ignore
-            entry_price = selected_executor.filled_amount_quote / selected_executor.filled_amount_base  # type: ignore
-
         return {
+            "create_timestamp": selected_executor.timestamp,
             "executor_id": selected_executor.id,
             "trading_pair": selected_executor.trading_pair,
-            "connector_name": selected_executor.connector_name,
-            "side": selected_executor.side,
-            "amount": selected_executor.amount,  # type: ignore
-            "entry_price": entry_price,
-            "timestamp": selected_executor.timestamp,
+            "current_position_average_price": entry_price,
             "is_trading": selected_executor.is_trading,
         }
 
@@ -148,14 +142,14 @@ class OpenInterestMarketCapController(ControllerBase):
             f"u{self.config.upper_threshold:.2f}:l{self.config.lower_threshold:.2f}:entry{self.config.entry_sma_window}:exit{self.config.exit_sma_window}"
         )
 
-    def _notify_hb_app(self, msg: str):
+    def notify_hb_app(self, msg: str):
         from hummingbot.client.hummingbot_application import HummingbotApplication
 
         HummingbotApplication.main_application().notify(msg)
 
     def notify_hb_app_with_timestamp(self, msg: str):
         timestamp = pd.Timestamp.fromtimestamp(self.current_timestamp)
-        self._notify_hb_app(f"({timestamp}) [{self.tag}] {msg}")
+        self.notify_hb_app(f"({timestamp}) [{self.tag}] {msg}")
 
     def start(self):
         super().start()
@@ -175,6 +169,10 @@ class OpenInterestMarketCapController(ControllerBase):
         actions.extend(self.create_actions_proposal())
         actions.extend(self.stop_actions_proposal())
         return actions
+
+    def get_available_balance(self, asset: str) -> Decimal:
+        connector = self.market_data_provider.get_connector(self.config.exchange)
+        return connector.get_available_balance(asset)
 
     async def update_processed_data(self):
         pass
@@ -207,26 +205,25 @@ class OpenInterestMarketCapController(ControllerBase):
     def get_last_sma(self, window: int) -> Optional[Decimal]:
         candles_df = self.get_candle_df()
         if len(candles_df) < window + 1:
-            self.logger().warning(f"Not enough candle data ({len(candles_df)}) for SMA window {window}.")
+            self.logger().warning(
+                f"Not enough candle data ({len(candles_df)}) for SMA window {window} to calculate for previous candle."
+            )
             return None
         sma = candles_df["close"].rolling(window=window).mean()
         return Decimal(str(sma.iloc[-2]))
 
     def get_last_zscore(self) -> Optional[Decimal]:
-        if not self._oi_mcap_feed or not self._oi_mcap_feed.ready:
-            self.logger().warning("OI MCAP Feed is not available or not ready.")
-            return None
-        if not self._oi_mcap_feed._queue:
-            self.logger().warning("OI MCAP Feed queue is empty.")
+        if not self._oi_mcap_feed or not self._oi_mcap_feed.is_updated():
+            self.logger().warning("OpenInterestMarketCapFeed is not updated, return None for last zscore value")
             return None
 
         last_record: OpenInterestMarketCapRecord = self._oi_mcap_feed._queue[-1]
         if last_record.zscores and self.config.zscore_window in last_record.zscores:
             zscore_value = last_record.zscores[self.config.zscore_window]
-            return Decimal(str(zscore_value)) if zscore_value is not None else None
+            return Decimal(str(zscore_value))
 
         self.logger().warning(
-            f"Z-score for window {self.config.zscore_window} not found in last OI MCAP record. Available: {last_record.zscores}"
+            f"Z-score for window {self.config.zscore_window} not found in last OpenInterestMarketCapRecord. Available: {last_record.zscores}"
         )
         return None
 
@@ -237,16 +234,10 @@ class OpenInterestMarketCapController(ControllerBase):
         return is_ready
 
     def is_oi_mcap_data_updated(self) -> bool:
-        if not self._oi_mcap_feed:
-            self.logger().debug("OI MCAP Feed not set.")
+        if not self._oi_mcap_feed or not self._oi_mcap_feed.is_updated():
+            self.logger().warning("OpenInterestMarketCapFeed is not set or not updated.")
             return False
-        if not self._oi_mcap_feed.ready:
-            self.logger().debug(f"{self._oi_mcap_feed.name} (OI MCAP Feed) is not ready.")
-            return False
-        is_updated = self._oi_mcap_feed.is_updated()
-        if not is_updated:
-            self.logger().info(f"{self._oi_mcap_feed.name} (OI MCAP Feed) is not updated.")
-        return is_updated
+        return True
 
     def is_candle_data_updated(self) -> bool:
         candles_df = self.get_candle_df()
@@ -300,10 +291,12 @@ class OpenInterestMarketCapController(ControllerBase):
     def should_entry_on_zscore_and_sma(self) -> bool:
         zscore = self.get_last_zscore()
         if zscore is None:
+            self.logger().warning("Last zscore is None at should_entry_on_zscore_and_sma")
             return False
 
         last_close_price = self.get_last_close_price()
         if last_close_price is None:
+            self.logger().warning("Last close price is None at should_entry_on_zscore_and_sma")
             return False
 
         is_price_entry_condition_met: bool = True
@@ -312,6 +305,7 @@ class OpenInterestMarketCapController(ControllerBase):
             if self.config.entry_sma_window is not None:
                 entry_sma = self.get_last_sma(self.config.entry_sma_window)
                 if entry_sma is None:
+                    self.logger().warning("Last entry SMA is None for LONG entry check")
                     return False
                 is_price_entry_condition_met = last_close_price > entry_sma
         else:
@@ -319,6 +313,7 @@ class OpenInterestMarketCapController(ControllerBase):
             if self.config.entry_sma_window is not None:
                 entry_sma = self.get_last_sma(self.config.entry_sma_window)
                 if entry_sma is None:
+                    self.logger().warning("Last entry SMA is None for SHORT entry check")
                     return False
                 is_price_entry_condition_met = last_close_price < entry_sma
 
@@ -327,10 +322,12 @@ class OpenInterestMarketCapController(ControllerBase):
     def should_exit_on_zscore_and_sma(self) -> bool:
         zscore = self.get_last_zscore()
         if zscore is None:
+            self.logger().warning("Last zscore is None at should_exit_on_zscore_and_sma")
             return False
 
         last_close_price = self.get_last_close_price()
         if last_close_price is None:
+            self.logger().warning("Last close price is None at should_exit_on_zscore_and_sma")
             return False
 
         is_price_exit_condition_met: bool = False
@@ -339,6 +336,7 @@ class OpenInterestMarketCapController(ControllerBase):
             if self.config.exit_sma_window is not None:
                 exit_sma = self.get_last_sma(self.config.exit_sma_window)
                 if exit_sma is None:
+                    self.logger().warning("Last exit SMA is None for LONG exit check")
                     return False
                 is_price_exit_condition_met = last_close_price < exit_sma
         else:
@@ -346,6 +344,7 @@ class OpenInterestMarketCapController(ControllerBase):
             if self.config.exit_sma_window is not None:
                 exit_sma = self.get_last_sma(self.config.exit_sma_window)
                 if exit_sma is None:
+                    self.logger().warning("Last exit SMA is None for SHORT exit check")
                     return False
                 is_price_exit_condition_met = last_close_price > exit_sma
 
@@ -355,82 +354,84 @@ class OpenInterestMarketCapController(ControllerBase):
             return is_zscore_exit_condition_met
 
     def should_create_entry(self) -> bool:
-        if not all(
-            [
-                self.is_market_data_ready(),
-                self.is_ready_for_new_position(),
-                self.is_within_entry_window(),
-                self.is_candle_data_updated(),
-                self.is_oi_mcap_data_updated(),
-            ]
-        ):
+        if not self.is_market_data_ready():
+            return False
+        if not self.is_ready_for_new_position():
+            return False
+        if not self.is_within_entry_window():
+            return False
+        if not self.is_candle_data_updated():
+            return False
+        if not self.is_oi_mcap_data_updated():
             return False
 
         is_entry_signal = self.should_entry_on_zscore_and_sma()
         is_exit_signal = self.should_exit_on_zscore_and_sma()
-
         if is_entry_signal and is_exit_signal:
-            self.logger().info("Entry and Exit signals triggered simultaneously. Skipping entry.")
+            self.logger().info("Entry and Exit signals triggered simultaneously. Ignoring both for entry decision.")
             return False
         return is_entry_signal
 
     def should_create_exit(self) -> bool:
-        if not all(
-            [
-                self.is_market_data_ready(),
-                self.active_position is not None,
-                self.is_within_entry_window(),
-                self.is_candle_data_updated(),
-                self.is_oi_mcap_data_updated(),
-            ]
-        ):
+        if not self.is_market_data_ready():
+            return False
+        if self.active_position is None:
+            return False
+        if not self.is_within_entry_window():
+            return False
+        if not self.is_candle_data_updated():
+            return False
+        if not self.is_oi_mcap_data_updated():
             return False
 
         is_entry_signal = self.should_entry_on_zscore_and_sma()
         is_exit_signal = self.should_exit_on_zscore_and_sma()
-
         if is_entry_signal and is_exit_signal:
-            self.logger().info("Entry and Exit signals triggered simultaneously. Prioritizing exit if conditions met.")
+            self.logger().info("Entry and Exit signals triggered simultaneously. Ignoring both for exit decision.")
         return is_exit_signal
 
     def get_entry_size(self) -> Decimal:
         trading_pair = self.config.trading_pair
         base_asset, quote_asset = trading_pair.split("-")
+        available_balance_quote = self.get_available_balance(quote_asset)
 
-        connector = self.market_data_provider.get_connector(self.config.exchange)
-        available_balance_quote = connector.get_available_balance(quote_asset)
-
+        # Estimate price, as we use market order.
         price_type = (
             PriceType.BestAsk if self.config.position_direction == PositionDirection.LONG else PriceType.BestBid
         )
         price = self.market_data_provider.get_price_by_type(self.config.exchange, trading_pair, price_type)
-
         if not isinstance(price, Decimal) or price <= Decimal("0"):
             self.logger().warning(
-                f"Invalid price ({price}) for {trading_pair} using {price_type.name}. Cannot calculate max size."
+                f"Invalid price ({price}) for {trading_pair} using {price_type.name}, cannot calculate max possible size."
             )
             return Decimal("0")
 
-        max_possible_size = (available_balance_quote * self.config.leverage) / price
-        configured_size = self.config.position_size
-        entry_size = min(max_possible_size, configured_size)
+        # Calculate max size possible with available quote balance and leverage
+        # Amount_base = (Balance_quote * Leverage) / Price_base_quote
+        max_possible_size_quote_adjusted = (available_balance_quote * self.config.leverage) / price
 
-        if entry_size <= Decimal("0"):
+        configured_size_base = self.config.position_size
+        entry_size_base = min(max_possible_size_quote_adjusted, configured_size_base)
+
+        if entry_size_base <= Decimal("0"):
             self.logger().warning(
-                f"Not enough balance for {trading_pair}. Avail: {available_balance_quote:.4f} {quote_asset}, "
-                f"Price: {price:.4f}, Max Size (Lev): {max_possible_size:.4f} {base_asset}. "
-                f"Config Size: {configured_size:.4f} {base_asset}."
+                f"Not enough balance to open position for {trading_pair}. "
+                f"Available quote: {available_balance_quote:.6f} {quote_asset}, "
+                f"Max possible size (leveraged): {max_possible_size_quote_adjusted:.6f} {base_asset}. "
+                f"Configured size: {configured_size_base:.6f} {base_asset}."
             )
             return Decimal("0")
 
-        if entry_size < configured_size:
-            self.logger().info(
-                f"Balance for {quote_asset} (lev {self.config.leverage}x) allows max size {max_possible_size:.4f} {base_asset}. "
-                f"Using smaller size: {entry_size:.4f} {base_asset} (Config: {configured_size:.4f} {base_asset})."
+        if entry_size_base < configured_size_base and entry_size_base > Decimal("0"):
+            self.logger().warning(
+                f"Available balance for {quote_asset} with leverage {self.config.leverage}x "
+                f"allows max size of {max_possible_size_quote_adjusted:.6f} {base_asset}. "
+                f"Configured position size is {configured_size_base:.6f} {base_asset}. "
+                f"Using smaller size: {entry_size_base:.6f} {base_asset}."
             )
-        return entry_size
+        return entry_size_base
 
-    def _log_and_notify_open_position(self, entry_size: Decimal, last_close_price: Decimal, zscore: Decimal):
+    def log_and_notify_open_position(self, entry_size: Decimal, last_close_price: Decimal, zscore: Decimal):
         entry_sma_str = "N/A"
         if self.config.entry_sma_window is not None:
             entry_sma = self.get_last_sma(self.config.entry_sma_window)
@@ -458,7 +459,7 @@ class OpenInterestMarketCapController(ControllerBase):
         self.logger().info(msg)
         self.notify_hb_app_with_timestamp(msg)
 
-    def _log_and_notify_close_position(self, last_close_price: Decimal, zscore: Decimal):
+    def log_and_notify_close_position(self, last_close_price: Decimal, zscore: Decimal):
         exit_sma_str = "N/A"
         if self.config.exit_sma_window is not None:
             exit_sma = self.get_last_sma(self.config.exit_sma_window)
@@ -504,70 +505,58 @@ class OpenInterestMarketCapController(ControllerBase):
 
         last_close_price = self.get_last_close_price()
         zscore = self.get_last_zscore()
-        if not (isinstance(last_close_price, Decimal) and isinstance(zscore, Decimal)):
-            self.logger().warning(
-                f"Missing price or zscore for logging open action. Price: {last_close_price}, Zscore: {zscore}"
-            )
-        else:
-            self._log_and_notify_open_position(entry_size, last_close_price, zscore)
-
+        assert isinstance(last_close_price, Decimal) and isinstance(zscore, Decimal)
+        self.log_and_notify_open_position(entry_size, last_close_price, zscore)
         return [CreateExecutorAction(controller_id=self.config.id, executor_config=executor_config)]
 
-    def stop_actions_proposal(self) -> List[StopExecutorAction]:
+    def stop_actions_proposal(self) -> list[StopExecutorAction]:
         if not self.should_create_exit():
             return []
 
-        active_pos = self.active_position
-        if not active_pos or "executor_id" not in active_pos:
-            self.logger().warning("Exit condition met, but no active position or executor_id found.")
-            return []
-
-        executor_id = active_pos["executor_id"]
-
+        assert self.active_position
+        executor_id = self.active_position["executor_id"]
         last_close_price = self.get_last_close_price()
         zscore = self.get_last_zscore()
-        if not (isinstance(last_close_price, Decimal) and isinstance(zscore, Decimal)):
+        if last_close_price is None or zscore is None:
             self.logger().warning(
-                f"Missing price or zscore for logging close action. Price: {last_close_price}, Zscore: {zscore}"
+                f"Cant create exit action due to missing price ({last_close_price}) or z-score ({zscore})."
             )
-        else:
-            self._log_and_notify_close_position(last_close_price, zscore)
+            return []
 
+        self.log_and_notify_close_position(last_close_price, zscore)
         return [StopExecutorAction(controller_id=self.config.id, executor_id=executor_id)]
 
-    def to_format_status(self) -> List[str]:
-        lines = []
-        lines.append(f"\nController: {self.config.id} ({self.tag})")
-        lines.append(f"  Exchange: {self.config.exchange}, Pair: {self.config.trading_pair}")
-        lines.append(f"  Direction: {self.config.position_direction.value}, Leverage: {self.config.leverage}")
-        lines.append(
-            f"  Z-Score Window: {self.config.zscore_window}, Upper: {self.config.upper_threshold:.2f}, Lower: {self.config.lower_threshold:.2f}"
-        )
-        lines.append(
-            f"  Entry SMA: {self.config.entry_sma_window or 'N/A'}, Exit SMA: {self.config.exit_sma_window or 'N/A'}"
-        )
-        lines.append(f"  Entry Window (s): {self.config.entry_window_in_sec}")
+    def to_format_status(self) -> list[str]:
+        if not (self.is_market_data_ready() and self._oi_mcap_feed and self._oi_mcap_feed.ready):
+            return ["MarketDataProvider and OpenInterestMarketCapFeed are not ready."]
 
+        lines = [f"\nController ID: {self.config.id}"]
+
+        # log strategy parameters
+        entry_sma_str = self.config.entry_sma_window if self.config.entry_sma_window is not None else "N/A"
+        exit_sma_str = self.config.exit_sma_window if self.config.exit_sma_window is not None else "N/A"
+        lines.append(f"  Position Direction: {self.config.position_direction.value.capitalize()}")
+        lines.append(f"  Upper Threshold: {self.config.upper_threshold}")
+        lines.append(f"  Lower Threshold: {self.config.lower_threshold}")
+        lines.append(f"  Z-score Window: {self.config.zscore_window}")
+        lines.append(f"  Entry SMA Window: {entry_sma_str}")
+        lines.append(f"  Exit SMA Window: {exit_sma_str}")
+
+        # log active position
         active_pos = self.active_position
         if active_pos:
-            lines.append("  Active Position:")
-            lines.append(f"    Executor ID: {active_pos['executor_id']}")
-            lines.append(f"    Side: {active_pos['side'].name}, Amount: {active_pos['amount']:.6f}")  # type: ignore
-            entry_price_str = f"{active_pos['entry_price']:.4f}" if active_pos["entry_price"] else "N/A"
-            lines.append(f"    Avg Entry Price: {entry_price_str}")
-            created_ts = pd.Timestamp(active_pos["timestamp"], unit="s", tz="UTC")
-            lines.append(f"    Created: {created_ts.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-            lines.append(f"    Is Trading: {active_pos['is_trading']}")
+            entry_price = active_pos.get("current_position_average_price")
+            entry_price_str = f"{entry_price:.4f}" if entry_price else "N/A"
+            lines.extend(
+                [
+                    "\nActive Position:",
+                    f"  Pair: {active_pos['trading_pair']}",
+                    f"  Entry Price: {entry_price_str}",
+                    f"  Created: {pd.Timestamp(active_pos['create_timestamp'], unit='s', tz='UTC').strftime('%Y-%m-%d %H:%M:%S %Z')}",
+                    f"  Executor ID: {active_pos['executor_id']}",
+                ]
+            )
         else:
-            lines.append("  No active position.")
-
-        lines.append(f"  Market Data Ready: {self.is_market_data_ready()}")
-        lines.append(f"  Candle Data Updated: {self.is_candle_data_updated()}")
-        lines.append(f"  OI MCAP Feed Set: {self._oi_mcap_feed is not None}")
-        if self._oi_mcap_feed:
-            lines.append(f"  OI MCAP Feed Ready: {self._oi_mcap_feed.ready}")
-            lines.append(f"  OI MCAP Data Updated: {self.is_oi_mcap_data_updated()}")
-            last_z = self.get_last_zscore()
-            lines.append(f"  Last Z-Score ({self.config.zscore_window}): {last_z if last_z is not None else 'N/A'}")
+            lines.append("\nNo Active Position.")
 
         return lines
