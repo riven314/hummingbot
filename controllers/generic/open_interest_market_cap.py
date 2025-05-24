@@ -110,19 +110,50 @@ class OpenInterestMarketCapController(ControllerBase):
         return self.market_data_provider.time()
 
     @property
+    def active_position(self) -> Optional[Dict[str, Any]]:
+        active_executors = self.filter_executors(
+            executors=self.executors_info,
+            filter_func=lambda e: e.is_active
+            and e.trading_pair == self.config.trading_pair
+            and e.connector_name == self.config.exchange,
+        )
+        if not active_executors:
+            return None
+
+        if len(active_executors) > 1:
+            self.logger().warning(
+                f"Found {len(active_executors)} active executors for {self.config.trading_pair}. Using the first one."
+            )
+
+        selected_executor = active_executors[0]
+        entry_price = selected_executor.custom_info.get("current_position_average_price")
+        if entry_price is None and selected_executor.filled_amount_base > 0:  # type: ignore
+            entry_price = selected_executor.filled_amount_quote / selected_executor.filled_amount_base  # type: ignore
+
+        return {
+            "executor_id": selected_executor.id,
+            "trading_pair": selected_executor.trading_pair,
+            "connector_name": selected_executor.connector_name,
+            "side": selected_executor.side,
+            "amount": selected_executor.amount,  # type: ignore
+            "entry_price": entry_price,
+            "timestamp": selected_executor.timestamp,
+            "is_trading": selected_executor.is_trading,
+        }
+
+    @property
     def tag(self) -> str:
         return (
-            f"{self.config.controller_name}:{self.config.trading_pair}:{self.config.position_direction.value}:"
-            f"z{self.config.zscore_window}:u{self.config.upper_threshold:.2f}:l{self.config.lower_threshold:.2f}"
+            f"{self.config.controller_name}:{self.config.trading_pair}:{self.config.position_direction}:z{self.config.zscore_window}:"
+            f"u{self.config.upper_threshold:.2f}:l{self.config.lower_threshold:.2f}:entry{self.config.entry_sma_window}:exit{self.config.exit_sma_window}"
         )
 
     def _notify_hb_app(self, msg: str):
         from hummingbot.client.hummingbot_application import HummingbotApplication
 
-        if HummingbotApplication.main_application():
-            HummingbotApplication.main_application().notify(msg)
+        HummingbotApplication.main_application().notify(msg)
 
-    def _notify_hb_app_with_timestamp(self, msg: str):
+    def notify_hb_app_with_timestamp(self, msg: str):
         timestamp = pd.Timestamp.fromtimestamp(self.current_timestamp)
         self._notify_hb_app(f"({timestamp}) [{self.tag}] {msg}")
 
@@ -135,7 +166,7 @@ class OpenInterestMarketCapController(ControllerBase):
             f"Entry SMA: {self.config.entry_sma_window or 'N/A'} | Exit SMA: {self.config.exit_sma_window or 'N/A'}"
         )
         self.logger().info(msg)
-        self._notify_hb_app_with_timestamp(
+        self.notify_hb_app_with_timestamp(
             f"Controller started. Config: {self.config.dict(exclude={'controller_name', 'controller_type', 'id'})}"
         )
 
@@ -425,7 +456,7 @@ class OpenInterestMarketCapController(ControllerBase):
             f"{zscore_cond_str} AND {price_cond_str}"
         )
         self.logger().info(msg)
-        self._notify_hb_app_with_timestamp(msg)
+        self.notify_hb_app_with_timestamp(msg)
 
     def _log_and_notify_close_position(self, last_close_price: Decimal, zscore: Decimal):
         exit_sma_str = "N/A"
@@ -450,7 +481,7 @@ class OpenInterestMarketCapController(ControllerBase):
 
         msg = f"Closing {direction_str} for {self.config.trading_pair} | " f"{zscore_cond_str} OR {price_cond_str}"
         self.logger().info(msg)
-        self._notify_hb_app_with_timestamp(msg)
+        self.notify_hb_app_with_timestamp(msg)
 
     def create_actions_proposal(self) -> List[CreateExecutorAction]:
         if not self.should_create_entry():
@@ -503,38 +534,6 @@ class OpenInterestMarketCapController(ControllerBase):
             self._log_and_notify_close_position(last_close_price, zscore)
 
         return [StopExecutorAction(controller_id=self.config.id, executor_id=executor_id)]
-
-    @property
-    def active_position(self) -> Optional[Dict[str, Any]]:
-        active_executors = self.filter_executors(
-            executors=self.executors_info,
-            filter_func=lambda e: e.is_active
-            and e.trading_pair == self.config.trading_pair
-            and e.connector_name == self.config.exchange,
-        )
-        if not active_executors:
-            return None
-
-        if len(active_executors) > 1:
-            self.logger().warning(
-                f"Found {len(active_executors)} active executors for {self.config.trading_pair}. Using the first one."
-            )
-
-        selected_executor = active_executors[0]
-        entry_price = selected_executor.custom_info.get("current_position_average_price")
-        if entry_price is None and selected_executor.filled_amount_base > 0:  # type: ignore
-            entry_price = selected_executor.filled_amount_quote / selected_executor.filled_amount_base  # type: ignore
-
-        return {
-            "executor_id": selected_executor.id,
-            "trading_pair": selected_executor.trading_pair,
-            "connector_name": selected_executor.connector_name,
-            "side": selected_executor.side,
-            "amount": selected_executor.amount,  # type: ignore
-            "entry_price": entry_price,
-            "timestamp": selected_executor.timestamp,
-            "is_trading": selected_executor.is_trading,
-        }
 
     def to_format_status(self) -> List[str]:
         lines = []
