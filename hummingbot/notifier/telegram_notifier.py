@@ -1,7 +1,9 @@
+import asyncio
 from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 from telegram import Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from hummingbot.core.utils.async_call_scheduler import AsyncCallScheduler
@@ -130,7 +132,25 @@ class TelegramNotifier(NotifierBase):
             self.logger().error("Cannot send telegram message: notifier not started")
             return
 
-        try:
-            await self._application.bot.send_message(chat_id=self._chat_id, text=msg)
-        except Exception as e:
-            self.logger().error(f"Error sending telegram message: {e}", exc_info=True)
+        max_retries = 3
+        retry_delay = 1.0
+
+        for attempt in range(max_retries):
+            try:
+                await self._application.bot.send_message(
+                    chat_id=self._chat_id, text=msg, read_timeout=30, write_timeout=30, connect_timeout=30
+                )
+                return
+            except (TimedOut, NetworkError) as e:
+                if attempt < max_retries - 1:
+                    self.logger().warning(
+                        f"Telegram message network failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {retry_delay}s..."
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    self.logger().error(f"Failed to send telegram message after max {max_retries} attempts: {e}")
+            except Exception as e:
+                self.logger().error(f"Unknow error sending telegram message: {e}", exc_info=True)
+                break
